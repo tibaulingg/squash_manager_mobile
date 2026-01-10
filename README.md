@@ -1,50 +1,62 @@
-# Welcome to your Expo app 👋
+# Squash 22 - App Mobile
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Application mobile React Native pour gérer les boxes de squash.
 
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## 🚀 Démarrage rapide
 
 ```bash
-npm run reset-project
+npm install
+npm start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## ⚙️ Configuration
 
-## Learn more
+**URL de l'API** : Modifier dans `constants/config.ts`
 
-To learn more about developing your project with Expo, look at the following resources:
+```typescript
+export const API_BASE_URL = 'https://votre-api.com/api/';
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## 📁 Structure simplifiée
 
-## Join the community
+```
+app/
+  (tabs)/
+    box.tsx       # Liste des boxes et matchs
+    index.tsx     # Page d'accueil
+    profil.tsx    # Profil utilisateur
+  login.tsx       # Connexion
+  signup.tsx      # Inscription
+  welcome.tsx     # Écran d'accueil
 
-Join our community of developers creating universal apps.
+components/
+  box-table.tsx   # Tableau d'un box
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+services/
+  api.ts          # Appels API (4 fonctions)
+
+types/
+  api.ts          # Types TypeScript
+
+constants/
+  config.ts       # Configuration API
+  theme.ts        # Couleurs et thème
+```
+
+## 🔌 API
+
+L'app utilise 4 endpoints :
+
+- `GET /Seasons` - Liste des saisons
+- `GET /Boxes?season_id={id}` - Boxes d'une saison
+- `GET /Matches?season_id={id}` - Matchs d'une saison
+- `GET /Players` - Tous les joueurs
+
+## 🎨 Fonctionnalités
+
+- ✅ Affichage des boxes par saison
+- ✅ Tableaux de matchs avec scores
+- ✅ Tri automatique par niveau
+- ✅ Pull-to-refresh
+- ✅ Mode sombre/clair
+- ✅ Avatars des joueurs
