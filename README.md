@@ -4,10 +4,10 @@ Application mobile React Native pour gérer les boxes de squash.
 
 ## 🚀 Démarrage rapide
 
-```bash
-npm install
+   ```bash
+   npm install
 npm start
-```
+   ```
 
 ## ⚙️ Configuration
 

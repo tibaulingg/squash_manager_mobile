@@ -1,9 +1,8 @@
-import { StyleSheet, View, useWindowDimensions, Text } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
+import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import type { MatchDTO } from '@/types/api';
 import { formatMatchScore, getMatchSpecialStatus, getShortMatchLabel } from '@/utils/match-helpers';
 
@@ -17,11 +16,13 @@ interface Player {
   id: string; // GUID
   firstName: string;
   lastName: string;
+  pictureUrl?: string | null;
 }
 
 interface BoxTableProps {
   players: Player[];
   matches: { [key: string]: Match };
+  onPlayerPress?: (playerId: string) => void;
 }
 
 // Calculer les points : 2 points par set gagné
@@ -62,8 +63,19 @@ const getInitials = (firstName: string, lastName: string): string => {
   return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
 };
 
-// Couleur d'avatar sobre et professionnelle
-const AVATAR_COLOR = '#9ca3af'; // Gris clair
+// Couleurs d'avatar adaptées au thème
+const getAvatarColors = (colorScheme: 'light' | 'dark') => {
+  if (colorScheme === 'dark') {
+    return {
+      backgroundColor: '#4B5563', // Gris moyen pour dark
+      textColor: '#F3F4F6', // Gris très clair pour le texte
+    };
+  }
+  return {
+    backgroundColor: '#E5E7EB', // Gris très clair pour light
+    textColor: '#374151', // Gris foncé pour le texte
+  };
+};
 
 // Formater la date
 const formatDate = (date: Date): string => {
@@ -74,7 +86,7 @@ const formatDate = (date: Date): string => {
   return `${day}/${month} ${hours}:${minutes}`;
 };
 
-export function BoxTable({ players, matches }: BoxTableProps) {
+export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const { width } = useWindowDimensions();
@@ -234,37 +246,50 @@ export function BoxTable({ players, matches }: BoxTableProps) {
         ]}>
           <ThemedText style={styles.headerText}></ThemedText>
         </View>
-        {sortedPlayers.map((player, index) => (
-          <View 
-            key={player.id} 
-            style={[
-              styles.cell, 
-              styles.headerCell, 
-              { 
-                width: playerColumnWidth,
-                backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
-              }
-            ]}
-          >
-            <View style={styles.playerHeader}>
-              <View style={[
-                styles.avatar,
-                styles.headerAvatar,
-                { backgroundColor: AVATAR_COLOR }
-              ]}>
-                <Text style={styles.avatarText}>
-                  {getInitials(player.firstName, player.lastName)}
-                </Text>
+        {sortedPlayers.map((player, index) => {
+          const PlayerComponent = onPlayerPress ? TouchableOpacity : View;
+          return (
+            <PlayerComponent
+              key={player.id}
+              style={[
+                styles.cell, 
+                styles.headerCell, 
+                { 
+                  width: playerColumnWidth,
+                  backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
+                }
+              ]}
+              onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
+              activeOpacity={onPlayerPress ? 0.7 : 1}
+            >
+              <View style={styles.playerHeader}>
+                {player.pictureUrl ? (
+                  <Image
+                    source={{ uri: player.pictureUrl }}
+                    style={[styles.avatar, styles.headerAvatar, { borderRadius: 10 }]}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[
+                    styles.avatar,
+                    styles.headerAvatar,
+                    { backgroundColor: getAvatarColors(colorScheme ?? 'light').backgroundColor }
+                  ]}>
+                    <Text style={[styles.avatarText, { color: getAvatarColors(colorScheme ?? 'light').textColor }]}>
+                      {getInitials(player.firstName, player.lastName)}
+                    </Text>
+                  </View>
+                )}
+                <ThemedText style={styles.firstNameText} numberOfLines={1}>
+                  {player.firstName}
+                </ThemedText>
+                <ThemedText style={styles.lastNameText} numberOfLines={1}>
+                  {player.lastName}
+                </ThemedText>
               </View>
-              <ThemedText style={styles.firstNameText} numberOfLines={1}>
-                {player.firstName}
-              </ThemedText>
-              <ThemedText style={styles.lastNameText} numberOfLines={1}>
-                {player.lastName}
-              </ThemedText>
-            </View>
-          </View>
-        ))}
+            </PlayerComponent>
+          );
+        })}
         <View style={[
           styles.cell, 
           styles.headerCell, 
@@ -282,32 +307,49 @@ export function BoxTable({ players, matches }: BoxTableProps) {
       {sortedPlayers.map((player, rowIndex) => (
         <View key={player.id} style={styles.dataRow}>
           {/* Nom du joueur avec avatar */}
-          <View style={[
-            styles.cell, 
-            styles.playerNameCell, 
-            { 
-              width: firstColumnWidth,
-              backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
-            }
-          ]}>
-            <View style={styles.playerNameContainer}>
-              <View style={[
-                styles.avatar,
-                styles.verticalAvatar,
-                { backgroundColor: AVATAR_COLOR }
-              ]}>
-                <Text style={styles.avatarTextVertical}>
-                  {getInitials(player.firstName, player.lastName)}
-                </Text>
-              </View>
-              <ThemedText style={styles.firstNameTextVertical} numberOfLines={1}>
-                {player.firstName}
-              </ThemedText>
-              <ThemedText style={styles.lastNameTextVertical} numberOfLines={1}>
-                {player.lastName}
-              </ThemedText>
-            </View>
-          </View>
+          {(() => {
+            const PlayerComponent = onPlayerPress ? TouchableOpacity : View;
+            return (
+              <PlayerComponent
+                style={[
+                  styles.cell, 
+                  styles.playerNameCell, 
+                  { 
+                    width: firstColumnWidth,
+                    backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
+                  }
+                ]}
+                onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
+                activeOpacity={onPlayerPress ? 0.7 : 1}
+              >
+                <View style={styles.playerNameContainer}>
+                  {player.pictureUrl ? (
+                    <Image
+                      source={{ uri: player.pictureUrl }}
+                      style={[styles.avatar, styles.verticalAvatar, { borderRadius: 10 }]}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={[
+                      styles.avatar,
+                      styles.verticalAvatar,
+                      { backgroundColor: getAvatarColors(colorScheme ?? 'light').backgroundColor }
+                    ]}>
+                      <Text style={[styles.avatarTextVertical, { color: getAvatarColors(colorScheme ?? 'light').textColor }]}>
+                        {getInitials(player.firstName, player.lastName)}
+                      </Text>
+                    </View>
+                  )}
+                  <ThemedText style={styles.firstNameTextVertical} numberOfLines={1}>
+                    {player.firstName}
+                  </ThemedText>
+                  <ThemedText style={styles.lastNameTextVertical} numberOfLines={1}>
+                    {player.lastName}
+                  </ThemedText>
+                </View>
+              </PlayerComponent>
+            );
+          })()}
 
           {/* Scores ou dates */}
           {sortedPlayers.map((_, colIndex) => {
@@ -383,36 +425,33 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    borderBottomColor: '#E5E7EB',
   },
   dataRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    borderBottomColor: '#E5E7EB',
   },
   cell: {
-    padding: 2,
+    padding: 4,
     justifyContent: 'center',
     alignItems: 'center',
     borderRightWidth: 1,
-    borderRightColor: '#ddd',
+    borderRightColor: '#E5E7EB',
   },
   headerCell: {
-    backgroundColor: '#f5f5f5',
-    minHeight: 45,
-    paddingVertical: 2,
+    minHeight: 50,
+    paddingVertical: 4,
     borderRightWidth: 1,
-    borderRightColor: '#ddd',
+    borderRightColor: '#E5E7EB',
   },
   totalColumn: {
-    borderLeftWidth: 1,
-    borderLeftColor: '#ddd',
-    backgroundColor: '#f9f9f9',
+    borderLeftWidth: 2,
+    borderLeftColor: '#D1D5DB',
   },
   playerNameCell: {
-    backgroundColor: '#f5f5f5',
     borderRightWidth: 1,
-    borderRightColor: '#ddd',
+    borderRightColor: '#E5E7EB',
   },
   playerNameContainer: {
     alignItems: 'center',
@@ -430,7 +469,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   avatarText: {
-    color: '#ffffff',
     fontSize: 7,
     fontWeight: '700',
   },
@@ -438,9 +476,9 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
+    overflow: 'hidden',
   },
   avatarTextVertical: {
-    color: '#ffffff',
     fontSize: 7,
     fontWeight: '700',
   },
@@ -451,25 +489,25 @@ const styles = StyleSheet.create({
   },
   firstNameText: {
     fontSize: 7,
-    fontWeight: '600',
+    fontWeight: '400',
     textAlign: 'center',
     lineHeight: 8,
   },
   lastNameText: {
     fontSize: 7,
-    fontWeight: '700',
+    fontWeight: '400',
     textAlign: 'center',
     lineHeight: 8,
   },
   firstNameTextVertical: {
     fontSize: 6,
-    fontWeight: '600',
+    fontWeight: '400',
     textAlign: 'center',
     lineHeight: 7,
   },
   lastNameTextVertical: {
     fontSize: 6,
-    fontWeight: '700',
+    fontWeight: '400',
     textAlign: 'center',
     lineHeight: 7,
   },
@@ -487,8 +525,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   dataCell: {
-    minHeight: 45,
-    paddingVertical: 2,
+    minHeight: 50,
+    paddingVertical: 4,
   },
   matchText: {
     fontSize: 10,
@@ -502,9 +540,8 @@ const styles = StyleSheet.create({
     color: '#666',
   },
   totalCell: {
-    backgroundColor: '#f0f0f0',
     borderLeftWidth: 2,
-    borderLeftColor: '#999',
+    borderLeftColor: '#D1D5DB',
   },
   totalText: {
     fontSize: 11,

@@ -1,10 +1,10 @@
-import * as Calendar from 'expo-calendar';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import ProfileScreen from '@/app/(tabs)/profil';
 import { AuthModal } from '@/components/auth-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -65,6 +65,8 @@ export default function HomeScreen() {
   const [myWaitingEntry, setMyWaitingEntry] = useState<WaitingListEntryDTO | null>(null);
   const [desiredBoxNumber, setDesiredBoxNumber] = useState<string>('');
   const [allPlayers, setAllPlayers] = useState<PlayerDTO[]>([]);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [showPlayerModal, setShowPlayerModal] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!isAuthenticated || !user) {
@@ -114,18 +116,23 @@ export default function HomeScreen() {
         (m) => m.player_a_id === player.id || m.player_b_id === player.id
       );
       
-      // Prochain match (à venir, non joué)
+      // Prochain match (non joué, peu importe la date)
+      // Inclure les matchs avec demande de report en attente
       const upcomingMatches = playerMatches.filter(
         (m) => {
           if (!m.scheduled_at) return false;
-          if (new Date(m.scheduled_at) <= new Date()) return false;
           
-          // Vérifier si le match a été joué ou a un cas spécial
-          const hasScore = (m.score_a !== null && m.score_a !== undefined) || 
-                          (m.score_b !== null && m.score_b !== undefined);
-          const hasSpecialStatus = m.no_show_player_id || m.retired_player_id || m.delayed_player_id;
+          // Vérifier si le match a été joué (score valide, pas 0-0)
+          const hasValidScore = (m.score_a !== null && m.score_a !== undefined) && 
+                               (m.score_b !== null && m.score_b !== undefined) &&
+                               !(m.score_a === 0 && m.score_b === 0);
           
-          return !hasScore && !hasSpecialStatus;
+          // Exclure seulement les matchs avec cas spéciaux résolus (accepted)
+          const hasResolvedSpecialStatus = (m.no_show_player_id || m.retired_player_id) ||
+                                          (m.delayed_player_id && m.delayed_status === 'accepted');
+          
+          // Inclure les matchs non joués (pas de score valide) et sans statut résolu
+          return !hasValidScore && !hasResolvedSpecialStatus;
         }
       );
       
@@ -151,10 +158,15 @@ export default function HomeScreen() {
           .map((match) => {
             const opponentId = match.player_a_id === player.id ? match.player_b_id : match.player_a_id;
             const opponent = players.find((p) => p.id === opponentId)!;
+            // Un match est complété seulement si les scores sont non-null ET qu'au moins un score est > 0
+            // (un match 0-0 n'est pas considéré comme joué)
+            const hasValidScores = match.score_a !== null && match.score_b !== null &&
+                                   (match.score_a! > 0 || match.score_b! > 0);
+            const hasSpecialStatus = !!(match.no_show_player_id || match.retired_player_id || match.delayed_player_id); // delayed_player_id rempli seulement si accepté et remis
             return {
               match,
               opponent,
-              isCompleted: match.score_a !== null && match.score_b !== null,
+              isCompleted: hasValidScores || hasSpecialStatus,
             };
           })
           .sort((a, b) => {
@@ -216,69 +228,289 @@ export default function HomeScreen() {
     router.push('/(tabs)/box');
   };
 
-  const handleExportToCalendar = async () => {
-    if (!currentPlayer || boxMatches.length === 0) {
-      Alert.alert('Aucun match', 'Vous n\'avez aucun match à venir à exporter');
-      return;
-    }
-
+  const handleRequestDelay = async (matchId: string) => {
+    if (!currentPlayer) return;
+    
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
+    
     try {
-      // Demander la permission d'accès au calendrier
-      const { status } = await Calendar.requestCalendarPermissionsAsync();
-      
-      if (status !== 'granted') {
-        Alert.alert('Permission refusée', 'L\'accès au calendrier est nécessaire pour exporter vos matchs');
-        return;
-      }
-
-      // Récupérer le calendrier par défaut
-      const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-      const defaultCalendar = calendars.find(cal => cal.isPrimary) || calendars[0];
-
-      if (!defaultCalendar) {
-        Alert.alert('Erreur', 'Aucun calendrier trouvé sur votre appareil');
-        return;
-      }
-
-      // Filtrer les matchs à venir (non joués)
-      const upcomingMatches = boxMatches.filter(m => !m.isCompleted && m.match.scheduled_at);
-      
-      if (upcomingMatches.length === 0) {
-        Alert.alert('Aucun match', 'Vous n\'avez aucun match à venir à exporter');
-        return;
-      }
-
-      let exportedCount = 0;
-
-      // Créer un événement pour chaque match
-      for (const item of upcomingMatches) {
-        const matchDate = new Date(item.match.scheduled_at!);
-        const endDate = new Date(matchDate.getTime() + 60 * 60 * 1000); // +1h par défaut
-
-        await Calendar.createEventAsync(defaultCalendar.id, {
-          title: `Squash - ${item.opponent.first_name} ${item.opponent.last_name}`,
-          startDate: matchDate,
-          endDate: endDate,
-          notes: `Match de squash contre ${item.opponent.first_name} ${item.opponent.last_name}`,
-          alarms: [{ relativeOffset: -60 }], // Rappel 1h avant
-        });
-
-        exportedCount++;
-      }
-
+      await api.requestMatchDelay(matchId, currentPlayer.id);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert(
-        'Export réussi',
-        `${exportedCount} match${exportedCount > 1 ? 's' : ''} exporté${exportedCount > 1 ? 's' : ''} dans votre calendrier`
-      );
-    } catch (error) {
-      console.error('Erreur export calendrier:', error);
+      Alert.alert('Demande envoyée', 'Votre demande de report a été envoyée à votre adversaire');
+      await loadData();
+    } catch (error: any) {
+      console.error('Erreur demande report:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', 'Impossible d\'exporter les matchs dans le calendrier');
+      Alert.alert('Erreur', error.message || 'Impossible d\'envoyer la demande de report');
     }
   };
+
+  const handleAcceptDelay = async (matchId: string) => {
+    if (!currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    try {
+      await api.acceptMatchDelay(matchId, currentPlayer.id);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Report accepté', 'Le report a été accepté. Le match sera reprogrammé.');
+      await loadData();
+    } catch (error: any) {
+      console.error('Erreur acceptation report:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Erreur', error.message || 'Impossible d\'accepter le report');
+    }
+  };
+
+  const handleRejectDelay = async (matchId: string) => {
+    if (!currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    Alert.alert(
+      'Refuser le report ?',
+      'Êtes-vous sûr de vouloir refuser cette demande de report ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Refuser',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.rejectMatchDelay(matchId, currentPlayer.id);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Report refusé', 'La demande de report a été refusée.');
+              await loadData();
+            } catch (error: any) {
+              console.error('Erreur refus report:', error);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              Alert.alert('Erreur', error.message || 'Impossible de refuser le report');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleCancelDelay = async (matchId: string) => {
+    if (!currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    Alert.alert(
+      'Annuler la demande ?',
+      'Êtes-vous sûr de vouloir annuler votre demande de report ?',
+      [
+        { text: 'Non', style: 'cancel' },
+        {
+          text: 'Oui, annuler',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.cancelMatchDelay(matchId, currentPlayer.id);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Demande annulée', 'Votre demande de report a été annulée.');
+              await loadData();
+            } catch (error: any) {
+              console.error('Erreur annulation report:', error);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+              Alert.alert('Erreur', error.message || 'Impossible d\'annuler la demande');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Helper function pour obtenir les infos de statut de report (sans affichage)
+  const getDelayStatusInfo = (match: MatchDTO, opponent: PlayerDTO) => {
+    if (!currentPlayer || !match.delayed_requested_by) return null;
+    
+    const isPlayerA = match.player_a_id === currentPlayer.id;
+    const isRequestingPlayer = match.delayed_requested_by === currentPlayer.id;
+    const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+    const isOpponent = match.delayed_requested_by === opponentId;
+    const delayStatus = match.delayed_status;
+    
+    // Si ce n'est pas une demande qui concerne le joueur actuel, ne rien retourner
+    if (!isRequestingPlayer && !isOpponent) return null;
+    
+    // Déterminer le texte et la couleur selon le statut
+    let statusText = '';
+    let statusColor = colors.text;
+    let statusBg = colors.text + '10';
+    
+    if (isRequestingPlayer) {
+      // Le joueur actuel a demandé
+      if (delayStatus === 'pending' || (delayStatus === null && match.delayed_requested_at && !match.delayed_resolved_at)) {
+        statusText = 'Report demandé';
+        statusColor = '#f59e0b';
+        statusBg = '#f59e0b' + '20';
+      } else if (delayStatus === 'accepted') {
+        statusText = 'Report accepté';
+        statusColor = '#10b981';
+        statusBg = '#10b981' + '20';
+      } else if (delayStatus === 'rejected') {
+        statusText = 'Report refusé';
+        statusColor = '#ef4444';
+        statusBg = '#ef4444' + '20';
+      } else if (delayStatus === 'cancelled') {
+        return null; // Ne pas afficher si annulé
+      }
+    } else if (isOpponent) {
+      // L'adversaire a demandé
+      if (delayStatus === 'pending' || (delayStatus === null && match.delayed_requested_at && !match.delayed_resolved_at)) {
+        statusText = 'Report demandé';
+        statusColor = '#f59e0b';
+        statusBg = '#f59e0b' + '20';
+      } else if (delayStatus === 'accepted') {
+        statusText = 'Report accepté';
+        statusColor = '#10b981';
+        statusBg = '#10b981' + '20';
+      } else if (delayStatus === 'rejected') {
+        statusText = 'Report refusé';
+        statusColor = '#ef4444';
+        statusBg = '#ef4444' + '20';
+      }
+    }
+    
+    if (!statusText) return null;
+    
+    return { statusText, statusColor, statusBg, delayStatus };
+  };
+
+  // Helper function pour afficher le statut de report (badge)
+  const renderDelayStatus = (match: MatchDTO, opponent: PlayerDTO) => {
+    const statusInfo = getDelayStatusInfo(match, opponent);
+    if (!statusInfo) return null;
+    
+    return (
+      <View style={[styles.delayStatusBadge, { backgroundColor: statusInfo.statusBg }]}>
+        <IconSymbol 
+          name={statusInfo.delayStatus === 'accepted' ? 'checkmark.circle.fill' : statusInfo.delayStatus === 'rejected' ? 'xmark.circle.fill' : 'exclamationmark.triangle.fill'} 
+          size={12} 
+          color={statusInfo.statusColor} 
+        />
+        <ThemedText style={[styles.delayStatusText, { color: statusInfo.statusColor }]}>
+          {statusInfo.statusText}
+        </ThemedText>
+      </View>
+    );
+  };
+
+  // Helper function pour afficher le statut de report comme tag (remplace score)
+  const renderDelayStatusTag = (match: MatchDTO, opponent: PlayerDTO) => {
+    const statusInfo = getDelayStatusInfo(match, opponent);
+    if (!statusInfo) return null;
+    
+    return (
+      <View style={[styles.scoreTag, { backgroundColor: statusInfo.statusBg }]}>
+        <ThemedText style={[styles.scoreTagText, { color: statusInfo.statusColor }]}>
+          {statusInfo.statusText}
+        </ThemedText>
+      </View>
+    );
+  };
+
+  // Helper function pour rendre les actions de report pour un match (petit bouton inline)
+  const renderDelayButtonInline = (match: MatchDTO, opponent: PlayerDTO) => {
+    if (!currentPlayer) return null;
+    
+    const isPlayerA = match.player_a_id === currentPlayer.id;
+    const isRequestingPlayer = match.delayed_requested_by === currentPlayer.id;
+    const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+    const isOpponent = match.delayed_requested_by && match.delayed_requested_by === opponentId;
+    const delayStatus = match.delayed_status;
+    
+    // Aucune demande en cours, le joueur peut demander un report
+    const canRequestDelay = !match.delayed_requested_by || 
+                           delayStatus === 'cancelled' || 
+                           delayStatus === 'rejected';
+    
+    // Ne permettre la demande que si le match n'est pas joué
+    const isMatchNotPlayed = !match.score_a && !match.score_b;
+    
+    // Seulement afficher le petit bouton "Report" si on peut demander
+    if (canRequestDelay && isMatchNotPlayed) {
+      return (
+        <TouchableOpacity
+          style={[styles.delayButtonSmall, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}
+          onPress={() => handleRequestDelay(match.id)}
+          activeOpacity={0.7}
+        >
+          <IconSymbol name="calendar.badge.exclamationmark" size={12} color={colors.text + '80'} />
+          <ThemedText style={[styles.delayButtonTextSmall, { color: colors.text + '80' }]}>
+            Report
+          </ThemedText>
+        </TouchableOpacity>
+      );
+    }
+    
+    return null;
+  };
+
+  // Helper function pour rendre les actions de report pour un match (actions complètes)
+  const renderDelayActions = (match: MatchDTO, opponent: PlayerDTO) => {
+    if (!currentPlayer) return null;
+    
+    const isPlayerA = match.player_a_id === currentPlayer.id;
+    const isRequestingPlayer = match.delayed_requested_by === currentPlayer.id;
+    const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+    const isOpponent = match.delayed_requested_by && match.delayed_requested_by === opponentId;
+    const delayStatus = match.delayed_status;
+    
+    // Le joueur a demandé un report et c'est en attente
+    if (isRequestingPlayer && (delayStatus === 'pending' || delayStatus === null || !delayStatus)) {
+      return (
+        <TouchableOpacity
+          style={[styles.delayButton, styles.delayButtonCancel, { backgroundColor: '#ef4444' + '15', borderColor: '#ef4444' + '40' }]}
+          onPress={() => handleCancelDelay(match.id)}
+          activeOpacity={0.7}
+        >
+          <IconSymbol name="xmark.circle.fill" size={16} color="#ef4444" />
+          <ThemedText style={[styles.delayButtonText, { color: '#ef4444' }]}>
+            Annuler la demande
+          </ThemedText>
+        </TouchableOpacity>
+      );
+    }
+    
+    // L'adversaire a demandé un report et c'est en attente
+    if (isOpponent && (delayStatus === 'pending' || delayStatus === null || !delayStatus)) {
+      return (
+        <View style={styles.delayActions}>
+          <ThemedText style={[styles.delayRequestText, { color: colors.text, opacity: 0.7 }]}>
+            {opponent.first_name} a demandé un report
+          </ThemedText>
+          <View style={styles.delayButtonsRow}>
+            <TouchableOpacity
+              style={[styles.delayButton, styles.delayButtonAccept, { backgroundColor: '#10b981' + '15', borderColor: '#10b981' + '40' }]}
+              onPress={() => handleAcceptDelay(match.id)}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="checkmark.circle.fill" size={16} color="#10b981" />
+              <ThemedText style={[styles.delayButtonText, { color: '#10b981' }]}>
+                Accepter
+              </ThemedText>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.delayButton, styles.delayButtonReject, { backgroundColor: '#ef4444' + '15', borderColor: '#ef4444' + '40' }]}
+              onPress={() => handleRejectDelay(match.id)}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="xmark.circle.fill" size={16} color="#ef4444" />
+              <ThemedText style={[styles.delayButtonText, { color: '#ef4444' }]}>
+                Refuser
+              </ThemedText>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+    
+    return null;
+  };
+
 
   // Helper pour obtenir le nom d'un joueur
   const getPlayerName = (playerId: string): string => {
@@ -334,10 +566,10 @@ export default function HomeScreen() {
   };
 
   if (loading) {
-    return (
+  return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={PRIMARY_COLOR} />
+          <ActivityIndicator size="large" color={colors.text + '80'} />
         </View>
       </ThemedView>
     );
@@ -436,7 +668,7 @@ export default function HomeScreen() {
               <ThemedText style={styles.infoTitle}>Comment ça marche ?</ThemedText>
               <ThemedText style={[styles.infoDescription, { color: colors.text + '70' }]}>
                 Inscrivez-vous, rejoignez un box adapté à votre niveau, et participez aux tournois hebdomadaires pour progresser et vous amuser.
-              </ThemedText>
+        </ThemedText>
             </View>
           </View>
         </ScrollView>
@@ -459,8 +691,8 @@ export default function HomeScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
-              tintColor={PRIMARY_COLOR}
-              colors={[PRIMARY_COLOR]}
+              tintColor={colors.text + '80'}
+              colors={[colors.text + '80']}
             />
           }
         >
@@ -594,7 +826,7 @@ export default function HomeScreen() {
                     </View>
                     <ThemedText style={[styles.waitingListDate, { color: colors.text + '60' }]}>
                       {new Date(entry.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
-                    </ThemedText>
+        </ThemedText>
                   </View>
                 ))}
               </View>
@@ -618,22 +850,27 @@ export default function HomeScreen() {
           { paddingTop: Math.max(insets.top, 20) + 20 },
         ]}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor={PRIMARY_COLOR}
-            colors={[PRIMARY_COLOR]}
-          />
-        }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={colors.text + '80'}
+              colors={[colors.text + '80']}
+            />
+          }
       >
         {/* Header d'accueil */}
         {currentPlayer && (
-          <View style={styles.welcomeHeader}>
-            <View style={styles.welcomeTextContainer}>
-              <ThemedText style={styles.welcomeName}>
-                {currentPlayer.first_name} {currentPlayer.last_name}
-              </ThemedText>
+          <View style={[styles.welcomeHeader, { backgroundColor: colors.background }]}>
+            <View style={styles.welcomeTopSection}>
+              <View style={styles.welcomeTextContainer}>
+                <ThemedText style={styles.welcomeGreeting}>
+                  Bonjour, {currentPlayer.first_name} 👋
+                </ThemedText>
+                <ThemedText style={[styles.welcomeSubtitle, { color: colors.text + '60' }]}>
+                  {getDayOfWeek()} {new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}
+                </ThemedText>
+              </View>
             </View>
             
             {currentPlayer.current_box && (
@@ -713,7 +950,15 @@ export default function HomeScreen() {
             </View>
             
             <View style={styles.matchContent}>
-              <View style={styles.matchOpponent}>
+              <TouchableOpacity 
+                style={styles.matchOpponent}
+                onPress={() => {
+                  setSelectedPlayerId(nextMatch.opponent.id);
+                  setShowPlayerModal(true);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+                activeOpacity={0.7}
+              >
                 <View style={[styles.avatar, { backgroundColor: AVATAR_COLOR }]}>
                   <ThemedText style={styles.avatarText}>
                     {getInitials(nextMatch.opponent.first_name, nextMatch.opponent.last_name)}
@@ -723,37 +968,44 @@ export default function HomeScreen() {
                   <ThemedText style={styles.opponentName}>
                     {nextMatch.opponent.first_name} {nextMatch.opponent.last_name}
                   </ThemedText>
-                  <ThemedText style={[styles.dateText, { color: colors.text }]}>
-                    {formatDate(new Date(nextMatch.match.scheduled_at!))}
-                  </ThemedText>
+                  {nextMatch.match.scheduled_at && new Date(nextMatch.match.scheduled_at) > new Date() && (
+                    <ThemedText style={[styles.dateText, { color: colors.text }]}>
+                      {formatDate(new Date(nextMatch.match.scheduled_at))}
+                    </ThemedText>
+                  )}
+                </View>
+              </TouchableOpacity>
+
+              {/* Actions de contact et report */}
+              <View style={styles.matchActions}>
+                <View style={styles.contactActions}>
+                  {nextMatch.opponent.phone && (
+                    <>
+                      <TouchableOpacity
+                        style={[styles.contactButton, { backgroundColor: colors.text + '08' }]}
+                        onPress={() => handleCall(nextMatch.opponent.phone!)}
+                        activeOpacity={0.7}
+                      >
+                        <IconSymbol name="phone.fill" size={14} color={colors.text} />
+                        <ThemedText style={[styles.contactButtonText, { color: colors.text }]}>
+                          Appeler
+                        </ThemedText>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.contactButton, { backgroundColor: colors.text + '08' }]}
+                        onPress={() => handleMessage(nextMatch.opponent.phone!)}
+                        activeOpacity={0.7}
+                      >
+                        <IconSymbol name="message.fill" size={14} color={colors.text} />
+                        <ThemedText style={[styles.contactButtonText, { color: colors.text }]}>
+                          Message
+                        </ThemedText>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                  {renderDelayStatus(nextMatch.match, nextMatch.opponent)}
                 </View>
               </View>
-
-              {/* Actions de contact */}
-              {nextMatch.opponent.phone && (
-                <View style={styles.contactActions}>
-                  <TouchableOpacity
-                    style={[styles.contactButton, { backgroundColor: colors.text + '08' }]}
-                    onPress={() => handleCall(nextMatch.opponent.phone!)}
-                    activeOpacity={0.7}
-                  >
-                    <IconSymbol name="phone.fill" size={14} color={colors.text} />
-                    <ThemedText style={[styles.contactButtonText, { color: colors.text }]}>
-                      Appeler
-                    </ThemedText>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.contactButton, { backgroundColor: colors.text + '08' }]}
-                    onPress={() => handleMessage(nextMatch.opponent.phone!)}
-                    activeOpacity={0.7}
-                  >
-                    <IconSymbol name="message.fill" size={14} color={colors.text} />
-                    <ThemedText style={[styles.contactButtonText, { color: colors.text }]}>
-                      Message
-                    </ThemedText>
-                  </TouchableOpacity>
-                </View>
-              )}
             </View>
           </View>
         ) : (
@@ -783,32 +1035,51 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.matchesList}>
-              {boxMatches.map((item, index) => (
-                <View
-                  key={item.match.id}
-                  style={[
-                    styles.matchItem,
-                    index !== boxMatches.length - 1 && [
-                      styles.matchItemBorder,
-                      { borderBottomColor: colors.text + '15' },
-                    ],
-                  ]}
-                >
-                  <View style={styles.matchItemLeft}>
-                    <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
-                      <ThemedText style={styles.smallAvatarText}>
-                        {getInitials(item.opponent.first_name, item.opponent.last_name)}
-                      </ThemedText>
-                    </View>
-                    <View style={styles.matchItemInfo}>
-                      <ThemedText style={styles.matchOpponentName}>
-                        {item.opponent.first_name} {item.opponent.last_name}
-                      </ThemedText>
-                      <ThemedText style={[styles.matchDate, { color: colors.text, opacity: 0.5 }]}>
-                        {item.match.scheduled_at ? formatDate(new Date(item.match.scheduled_at)) : 'Date non définie'}
-                      </ThemedText>
-                    </View>
-                  </View>
+              {boxMatches.map((item, index) => {
+                console.log('[MES MATCHS DEBUG] Match:', {
+                  matchId: item.match.id,
+                  opponent: `${item.opponent.first_name} ${item.opponent.last_name}`,
+                  delayedPlayerId: item.match.delayed_player_id,
+                  delayedStatus: item.match.delayed_status,
+                  delayedRequestedAt: item.match.delayed_requested_at,
+                  delayedResolvedAt: item.match.delayed_resolved_at,
+                  isCompleted: item.isCompleted,
+                });
+                
+                return (
+                <View key={item.match.id}>
+                  <View
+                    style={[
+                      styles.matchItem,
+                      index !== boxMatches.length - 1 && [
+                        styles.matchItemBorder,
+                        { borderBottomColor: colors.text + '15' },
+                      ],
+                    ]}
+                  >
+                    <TouchableOpacity 
+                      style={styles.matchItemLeft}
+                      onPress={() => {
+                        setSelectedPlayerId(item.opponent.id);
+                        setShowPlayerModal(true);
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
+                        <ThemedText style={styles.smallAvatarText}>
+                          {getInitials(item.opponent.first_name, item.opponent.last_name)}
+                        </ThemedText>
+                      </View>
+                      <View style={styles.matchItemInfo}>
+                        <ThemedText style={styles.matchOpponentName}>
+                          {item.opponent.first_name} {item.opponent.last_name}
+                        </ThemedText>
+                        <ThemedText style={[styles.matchDate, { color: colors.text, opacity: 0.5 }]}>
+                          {item.match.scheduled_at ? formatDate(new Date(item.match.scheduled_at)) : 'Date non définie'}
+                        </ThemedText>
+                      </View>
+                  </TouchableOpacity>
                   <View style={styles.matchItemRight}>
                     {item.isCompleted ? (
                       (() => {
@@ -837,37 +1108,175 @@ export default function HomeScreen() {
                           </View>
                         );
                       })()
-                    ) : (
-                      <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
-                        <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
-                          À venir
-                        </ThemedText>
-                      </View>
-                    )}
+                      ) : (
+                        <View style={styles.matchItemRightContent}>
+                          <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
+                            <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
+                              À venir
+                            </ThemedText>
+                          </View>
+                          {renderDelayButtonInline(item.match, item.opponent) && (
+                            <View style={styles.delayButtonWrapper}>
+                              {renderDelayButtonInline(item.match, item.opponent)}
+                            </View>
+                          )}
+                        </View>
+                      )}
                   </View>
                 </View>
-              ))}
+                </View>
+                );
+              })}
             </View>
-            
-            {/* Bouton export calendrier */}
-            {boxMatches.some(m => !m.isCompleted && m.match.scheduled_at) && (
-              <TouchableOpacity
-                style={[styles.exportButton, { backgroundColor: colors.text + '05', borderColor: colors.text + '20' }]}
-                onPress={handleExportToCalendar}
-                activeOpacity={0.7}
-              >
-                <IconSymbol name="calendar.badge.plus" size={18} color={PRIMARY_COLOR} />
-                <ThemedText style={[styles.exportButtonText, { color: colors.text }]}>
-                  Exporter dans le calendrier
-                </ThemedText>
-              </TouchableOpacity>
-            )}
           </View>
         )}
 
+        {/* Section Demandes de report */}
+        {currentPlayer && boxMatches.length > 0 && (() => {
+          console.log('[DELAY REQUESTS DEBUG] Total boxMatches:', boxMatches.length);
+          console.log('[DELAY REQUESTS DEBUG] CurrentPlayer ID:', currentPlayer.id);
+          
+          // Récupérer toutes les demandes de report en cours qui concernent le joueur actuel
+          const delayRequests = boxMatches
+            .filter(item => {
+              const match = item.match;
+              const isPlayerA = match.player_a_id === currentPlayer.id;
+              const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+              
+              console.log('[DELAY REQUESTS DEBUG] Match:', {
+                matchId: match.id,
+                currentPlayerId: currentPlayer.id,
+                playerAId: match.player_a_id,
+                playerBId: match.player_b_id,
+                delayedPlayerId: match.delayed_player_id,
+                delayStatus: match.delayed_status,
+                isPlayerA,
+                opponentId,
+              });
+              
+ 
+  
+              const delayStatus = match.delayed_status;
+              
+              // Exclure les demandes acceptées, rejetées ou annulées
+              // Une demande est en attente si :
+              // - delayStatus est 'pending' OU
+              // - delayStatus est null/undefined ET delayed_requested_at existe ET delayed_resolved_at n'existe pas
+              const hasRequestedAt = !!match.delayed_requested_at;
+              const hasResolvedAt = !!match.delayed_resolved_at;
+              const isPending = delayStatus === 'pending' || 
+                               (delayStatus === null && hasRequestedAt && !hasResolvedAt) ||
+                               (!delayStatus && hasRequestedAt && !hasResolvedAt);
+              
+              console.log('[DELAY REQUESTS DEBUG] Delay status check:', {
+                delayStatus,
+                delayedRequestedAt: match.delayed_requested_at,
+                delayedResolvedAt: match.delayed_resolved_at,
+                hasRequestedAt,
+                hasResolvedAt,
+                isPending,
+                willInclude: isPending,
+              });
+              
+              // Inclure seulement les demandes en attente qui concernent le joueur actuel
+              if (!isPending) {
+                console.log('[DELAY REQUESTS DEBUG] Request is not pending (accepted/rejected/cancelled or no request), skipping');
+                return false;
+              }
+              
+              // Vérifier qu'il y a bien une demande (delayed_requested_at doit exister)
+              if (!hasRequestedAt) {
+                console.log('[DELAY REQUESTS DEBUG] No delayed_requested_at, skipping');
+                return false;
+              }
+              
+              return true;
+            })
+            .map(item => ({
+              match: item.match,
+              opponent: item.opponent,
+            }));
+
+          console.log('[DELAY REQUESTS DEBUG] Filtered delayRequests:', delayRequests.length);
+          delayRequests.forEach((req, idx) => {
+            console.log(`[DELAY REQUESTS DEBUG] Request ${idx + 1}:`, {
+              matchId: req.match.id,
+              opponent: `${req.opponent.first_name} ${req.opponent.last_name}`,
+              delayedPlayerId: req.match.delayed_player_id,
+              delayStatus: req.match.delayed_status,
+            });
+          });
+
+          if (delayRequests.length === 0) {
+            console.log('[DELAY REQUESTS DEBUG] No delay requests to display');
+            return null;
+          }
+          
+          console.log('[DELAY REQUESTS DEBUG] Displaying', delayRequests.length, 'delay requests');
+
+          return (
+            <View style={[styles.card, { backgroundColor: colors.background }]}>
+              <View style={styles.cardHeader}>
+                <View style={styles.cardHeaderLeft}>
+                  <View style={[styles.iconContainer, { backgroundColor: '#f59e0b' + '20' }]}>
+                    <IconSymbol name="exclamationmark.triangle.fill" size={18} color="#f59e0b" />
+                  </View>
+                  <ThemedText style={styles.cardTitle}>Demandes de report</ThemedText>
+                </View>
+              </View>
+
+              <View style={styles.delayRequestsList}>
+                {delayRequests.map((delayItem, index) => (
+                  <View
+                    key={delayItem.match.id}
+                    style={[
+                      styles.delayRequestItem,
+                      index !== delayRequests.length - 1 && [
+                        styles.delayRequestItemBorder,
+                        { borderBottomColor: colors.text + '15' },
+                      ],
+                    ]}
+                  >
+                    <View style={styles.delayRequestInfo}>
+                      <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
+                        <ThemedText style={styles.smallAvatarText}>
+                          {getInitials(delayItem.opponent.first_name, delayItem.opponent.last_name)}
+                        </ThemedText>
+                      </View>
+                      <View style={styles.delayRequestDetails}>
+                        <ThemedText style={styles.delayRequestOpponent}>
+                          {delayItem.opponent.first_name} {delayItem.opponent.last_name}
+                        </ThemedText>
+                        <ThemedText style={[styles.delayRequestDate, { color: colors.text, opacity: 0.5 }]}>
+                          {delayItem.match.scheduled_at ? formatDate(new Date(delayItem.match.scheduled_at)) : 'Date non définie'}
+                        </ThemedText>
+                      </View>
+                    </View>
+                    <View style={styles.delayRequestActions}>
+                      {renderDelayActions(delayItem.match, delayItem.opponent)}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </View>
+          );
+        })()}
+
         <View style={{ height: 40 }} />
       </ScrollView>
-    </ThemedView>
+      
+      {/* Modal de profil joueur */}
+      {showPlayerModal && selectedPlayerId && (
+        <ProfileScreen
+          isModal={true}
+          playerId={selectedPlayerId}
+          onClose={() => {
+            setShowPlayerModal(false);
+            setSelectedPlayerId(null);
+          }}
+        />
+      )}
+      </ThemedView>
   );
 }
 
@@ -885,15 +1294,30 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    minHeight: 400,
   },
   welcomeHeader: {
     marginBottom: 24,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    padding: 20,
+    borderRadius: 16,
+    marginHorizontal: 20,
+    marginTop: 8,
+  },
+  welcomeTopSection: {
+    marginBottom: 16,
   },
   welcomeTextContainer: {
     flex: 1,
+  },
+  welcomeGreeting: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  welcomeSubtitle: {
+    fontSize: 14,
+    fontWeight: '400',
+    textTransform: 'capitalize',
   },
   welcomeName: {
     fontSize: 24,
@@ -1007,10 +1431,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
   },
+  matchActions: {
+    marginTop: 12,
+    gap: 12,
+  },
   contactActions: {
     flexDirection: 'row',
     gap: 6,
-    marginTop: 4,
   },
   contactButton: {
     flex: 1,
@@ -1025,6 +1452,107 @@ const styles = StyleSheet.create({
   contactButtonText: {
     fontSize: 12,
     fontWeight: '500',
+  },
+  delayButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  delayButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  delayButtonSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  delayButtonTextSmall: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  delayStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginTop: 6,
+    alignSelf: 'flex-start',
+  },
+  delayStatusText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  delayActions: {
+    gap: 8,
+  },
+  delayRequestText: {
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  delayButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  delayButtonAccept: {
+    flex: 1,
+  },
+  delayButtonReject: {
+    flex: 1,
+  },
+  delayButtonCancel: {
+    width: '100%',
+  },
+  matchDelayActions: {
+    marginTop: 8,
+    paddingTop: 8,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  delayRequestsList: {
+    gap: 0,
+  },
+  delayRequestItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  delayRequestItemBorder: {
+    borderBottomWidth: 1,
+  },
+  delayRequestInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  delayRequestDetails: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  delayRequestOpponent: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  delayRequestDate: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  delayRequestActions: {
+    marginTop: 8,
   },
   noMatch: {
     fontSize: 15,
@@ -1076,6 +1604,14 @@ const styles = StyleSheet.create({
   matchItemRight: {
     marginLeft: 8,
   },
+  matchItemRightContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  delayButtonWrapper: {
+    marginLeft: 4,
+  },
   scoreTag: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -1092,21 +1628,6 @@ const styles = StyleSheet.create({
   },
   pendingTagText: {
     fontSize: 12,
-    fontWeight: '500',
-  },
-  exportButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    borderWidth: 1,
-    marginTop: 12,
-  },
-  exportButtonText: {
-    fontSize: 14,
     fontWeight: '500',
   },
   // Styles pour la vue publique - Design moderne

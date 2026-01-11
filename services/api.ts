@@ -3,23 +3,84 @@ import type { BoxDTO, MatchDTO, PlayerDTO, SeasonDTO, WaitingListEntryDTO } from
 
 // Fonction helper simple pour les requêtes
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+  const url = `${API_BASE_URL}${endpoint}`;
   
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  try {
+    const response = await fetch(url, options);
+    
+    // Lire le body une seule fois
+    const text = await response.text();
+    
+    if (!response.ok) {
+      // Parser le body d'erreur si disponible
+      let errorJson: any = null;
+      if (text) {
+        try {
+          errorJson = JSON.parse(text);
+        } catch {
+          // Pas du JSON, garder le texte brut
+        }
+      }
+      
+      // Logger toutes les infos d'erreur
+      try {
+        const headers: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          headers[key] = value;
+        });
+        
+        console.error('❌ API Error:', {
+          url,
+          method: options?.method || 'GET',
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+          errorBody: text,
+          errorJson,
+          requestOptions: {
+            method: options?.method,
+            headers: options?.headers,
+            // Ne pas logger le body car il peut être sensible ou volumineux
+          },
+        });
+      } catch (logError) {
+        // Si le logging échoue, continuer quand même
+        console.error('❌ API Error (logging failed):', logError);
+      }
+      
+      // Créer un message d'erreur détaillé
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      if (errorJson) {
+        errorMessage = errorJson.message || errorJson.title || errorJson.detail || errorMessage;
+      } else if (text) {
+        errorMessage = text.length > 200 ? text.substring(0, 200) + '...' : text;
+      }
+      
+      throw new Error(errorMessage);
+    }
+    
+    // Gérer les réponses vides (204 No Content)
+    if (response.status === 204 || !text) {
+      return {} as T;
+    }
+    
+    return JSON.parse(text);
+  } catch (error: any) {
+    // Si c'est déjà notre erreur, la relancer
+    if (error.message && error.message.startsWith('HTTP')) {
+      throw error;
+    }
+    
+    // Sinon, logger l'erreur réseau
+    console.error('❌ Network Error:', {
+      url,
+      method: options?.method || 'GET',
+      error: error.message,
+      stack: error.stack,
+    });
+    
+    throw error;
   }
-  
-  // Gérer les réponses vides (204 No Content)
-  if (response.status === 204 || response.headers.get('content-length') === '0') {
-    return {} as T;
-  }
-  
-  const text = await response.text();
-  if (!text) {
-    return {} as T;
-  }
-  
-  return JSON.parse(text);
 }
 
 // Services API minimaux
@@ -58,6 +119,7 @@ export const api = {
       formData.append('SchedulePreference', data.schedule_preference);
     }
     
+    // N'ajouter ProfileImage que s'il est présent
     if (data.profile_image) {
       formData.append('ProfileImage', {
         uri: data.profile_image.uri,
@@ -132,6 +194,38 @@ export const api = {
   removeFromWaitingList: (entryId: string) =>
     fetchApi<void>(`/WaitingList/${entryId}`, {
       method: 'DELETE',
+    }),
+
+  // Demandes de report
+  requestMatchDelay: (matchId: string, playerId: string) =>
+    fetchApi<MatchDTO>(`/Matches/${matchId}/request-delay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        PlayerId: playerId,
+        DelayedRequestedBy: playerId,
+      }),
+    }),
+
+  acceptMatchDelay: (matchId: string, playerId: string) =>
+    fetchApi<MatchDTO>(`/Matches/${matchId}/accept-delay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ PlayerId: playerId }),
+    }),
+
+  rejectMatchDelay: (matchId: string, playerId: string) =>
+    fetchApi<MatchDTO>(`/Matches/${matchId}/reject-delay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ PlayerId: playerId }),
+    }),
+
+  cancelMatchDelay: (matchId: string, playerId: string) =>
+    fetchApi<MatchDTO>(`/Matches/${matchId}/cancel-delay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ PlayerId: playerId }),
     }),
 };
 

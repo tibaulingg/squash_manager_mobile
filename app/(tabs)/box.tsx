@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import ProfileScreen from '@/app/(tabs)/profil';
 import { BoxTable } from '@/components/box-table';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -11,7 +12,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
-import type { MatchDTO } from '@/types/api';
+import type { MatchDTO, PlayerDTO } from '@/types/api';
 
 // Types internes pour le composant
 interface Player {
@@ -50,6 +51,9 @@ export default function BoxScreen() {
   const [boxesData, setBoxesData] = useState<BoxData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [showPlayerModal, setShowPlayerModal] = useState(false);
+  const [allPlayers, setAllPlayers] = useState<PlayerDTO[]>([]);
 
   // Charger les données depuis l'API
   const loadBoxesData = useCallback(async () => {
@@ -71,11 +75,14 @@ export default function BoxScreen() {
       }
 
       // Récupérer les matchs, les joueurs et les boxes de la saison en cours
-      const [seasonMatches, allPlayers, allBoxes] = await Promise.all([
+      const [seasonMatches, playersList, allBoxes] = await Promise.all([
         api.getMatches(currentSeason.id),
         api.getPlayers(),
         api.getBoxes(currentSeason.id),
       ]);
+      
+      // Sauvegarder tous les joueurs pour le modal
+      setAllPlayers(playersList);
 
       // Grouper les matchs par box_id
       const matchesByBox = new Map<string, MatchDTO[]>();
@@ -102,12 +109,13 @@ export default function BoxScreen() {
         });
 
         // Récupérer les infos des joueurs
-        const boxPlayers: Player[] = allPlayers
+        const boxPlayers: Player[] = playersList
           .filter((p) => playerIds.has(p.id))
           .map((p) => ({
             id: p.id,
             firstName: p.first_name,
             lastName: p.last_name,
+            pictureUrl: p.picture,
           }));
 
         // Créer un mapping des matchs par paire de joueurs (index dans boxPlayers)
@@ -289,13 +297,21 @@ export default function BoxScreen() {
     }
   }, [loadBoxesData]);
 
+  const handlePlayerPress = useCallback((playerId: string) => {
+    setSelectedPlayerId(playerId);
+    setShowPlayerModal(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
+
   // Afficher le chargement initial
   if (isLoading) {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={PRIMARY_COLOR} />
-          <ThemedText style={styles.loadingText}>Chargement des boxes...</ThemedText>
+          <ActivityIndicator size="large" color={colors.text + '80'} />
+          <ThemedText style={[styles.loadingText, { color: colors.text, opacity: 0.5 }]}>
+            Chargement des boxes...
+          </ThemedText>
         </View>
       </ThemedView>
     );
@@ -351,8 +367,8 @@ export default function BoxScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={PRIMARY_COLOR}
-            colors={[PRIMARY_COLOR]}
+            tintColor={colors.text + '80'}
+            colors={[colors.text + '80']}
             progressViewOffset={Math.max(insets.top, 16)}
             progressBackgroundColor={colorScheme === 'dark' ? '#1a1a1a' : '#ffffff'}
           />
@@ -363,7 +379,10 @@ export default function BoxScreen() {
             key={box.id}
             style={[
               styles.boxContainer,
-              { backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff' },
+              { 
+                backgroundColor: colors.background,
+                borderColor: colors.text + '15',
+              },
             ]}
             onLayout={(event) => {
               const { y, height } = event.nativeEvent.layout;
@@ -373,12 +392,20 @@ export default function BoxScreen() {
             <View
               style={[
                 styles.boxTitleContainer,
-                { backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f0f0f0' },
+                { 
+                  backgroundColor: colors.background,
+                  borderBottomColor: colors.text + '15',
+                },
               ]}
             >
-              <ThemedText type="subtitle" style={styles.boxTitle}>
-                {box.name}
-              </ThemedText>
+              <View style={styles.boxTitleLeft}>
+                <View style={[styles.boxIconContainer, { backgroundColor: PRIMARY_COLOR + '15' }]}>
+                  <IconSymbol name="square.grid.2x2.fill" size={18} color={PRIMARY_COLOR} />
+                </View>
+                <ThemedText type="subtitle" style={styles.boxTitle}>
+                  {box.name}
+                </ThemedText>
+              </View>
               <TouchableOpacity
                 onPress={() => toggleFavorite(box.id)}
                 style={styles.starButton}
@@ -386,15 +413,33 @@ export default function BoxScreen() {
               >
                 <IconSymbol
                   name={favorites.has(box.id) ? 'star.fill' : 'star'}
-                  size={24}
-                  color={favorites.has(box.id) ? '#fbbf24' : colors.icon}
+                  size={22}
+                  color={favorites.has(box.id) ? '#fbbf24' : colors.text + '40'}
                 />
               </TouchableOpacity>
             </View>
-            <BoxTable players={box.players} matches={box.matches} />
+            <View style={styles.tableWrapper}>
+              <BoxTable 
+                players={box.players} 
+                matches={box.matches}
+                onPlayerPress={handlePlayerPress}
+              />
+            </View>
           </View>
         ))}
       </ScrollView>
+      
+      {/* Modal de profil joueur */}
+      {showPlayerModal && selectedPlayerId && (
+        <ProfileScreen
+          isModal={true}
+          playerId={selectedPlayerId}
+          onClose={() => {
+            setShowPlayerModal(false);
+            setSelectedPlayerId(null);
+          }}
+        />
+      )}
     </ThemedView>
   );
 }
@@ -415,10 +460,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
+    minHeight: 400,
   },
   loadingText: {
     marginTop: 16,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '500',
   },
   errorContainer: {
@@ -464,29 +510,51 @@ const styles = StyleSheet.create({
   },
   boxContainer: {
     marginBottom: 24,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 6,
   },
   boxTitleContainer: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginBottom: 0,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    overflow: 'hidden',
+  },
+  boxTitleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  boxIconContainer: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   boxTitle: {
+    fontSize: 16,
     fontWeight: '700',
     flex: 1,
-    textAlign: 'center',
   },
   starButton: {
-    padding: 4,
+    padding: 6,
     marginLeft: 8,
+  },
+  tableWrapper: {
+    borderBottomLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    overflow: 'hidden',
   },
 });
 

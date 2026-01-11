@@ -1,7 +1,7 @@
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthModal } from '@/components/auth-modal';
@@ -42,9 +42,16 @@ const formatDate = (date: Date): string => {
 };
 
 type SortOption = 'date' | 'score' | 'opponent';
+type SortDirection = 'asc' | 'desc';
 type FilterOption = 'all' | 'won' | 'lost';
 
-export default function ProfileScreen() {
+interface ProfileScreenProps {
+  isModal?: boolean;
+  playerId?: string;
+  onClose?: () => void;
+}
+
+export default function ProfileScreen({ isModal = false, playerId, onClose }: ProfileScreenProps = {}) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const router = useRouter();
@@ -52,9 +59,40 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [currentPlayer, setCurrentPlayer] = useState<PlayerDTO | null>(null);
   const [stats, setStats] = useState({ wins: 0, losses: 0, winRate: 0 });
+  const [advancedStats, setAdvancedStats] = useState({
+    currentStreak: { type: 'win' as 'win' | 'loss', count: 0 },
+    bestStreak: { type: 'win' as 'win' | 'loss', count: 0, matches: [] as any[] },
+    worstStreak: { type: 'loss' as 'win' | 'loss', count: 0, matches: [] as any[] },
+    bestOpponent: { name: '', winRate: 0, matches: 0, wins: 0, losses: 0, matchList: [] as any[], player: null as PlayerDTO | null },
+    worstOpponent: { name: '', winRate: 0, matches: 0, wins: 0, losses: 0, matchList: [] as any[], player: null as PlayerDTO | null },
+    rival: { name: '', matches: 0, wins: 0, losses: 0, matchList: [] as any[], player: null as PlayerDTO | null },
+    totalPoints: 0,
+    rankingPosition: 0,
+    form: [] as Array<'win' | 'loss' | 'draw'>,
+  });
+  const [nextMatch, setNextMatch] = useState<{
+    match: any; // MatchDTO
+    opponent: PlayerDTO;
+  } | null>(null);
+  const [matchDetailsModal, setMatchDetailsModal] = useState<{
+    visible: boolean;
+    title: string;
+    matches: Array<{
+      match: any; // MatchDTO
+      opponent: string;
+      score: string;
+      date: Date;
+      won: boolean;
+    }>;
+  }>({
+    visible: false,
+    title: '',
+    matches: [],
+  });
   const [recentMatches, setRecentMatches] = useState<Array<{
     matchData: any; // MatchDTO complet pour accéder aux IDs spéciaux
     opponent: string;
@@ -64,6 +102,7 @@ export default function ProfileScreen() {
   }>>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('date');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -75,7 +114,27 @@ export default function ProfileScreen() {
   const { image: newProfileImage, pickImage, clearImage } = useImagePicker();
 
   const loadData = useCallback(async () => {
-    if (!isAuthenticated || !user) {
+    // En mode modal, on charge le joueur spécifié
+    if (isModal && playerId) {
+      try {
+        setLoading(true);
+        const players = await api.getPlayers();
+        const player = players.find((p) => p.id === playerId);
+        if (!player) {
+          setLoading(false);
+          return;
+        }
+        setCurrentPlayer(player);
+        // Continuer avec le chargement des données pour ce joueur
+      } catch (err) {
+        console.error('Erreur lors du chargement du joueur:', err);
+        setLoading(false);
+        return;
+      }
+    }
+    
+    // Mode normal : nécessite authentification
+    if (!isModal && (!isAuthenticated || !user)) {
       setLoading(false);
       return;
     }
@@ -83,11 +142,20 @@ export default function ProfileScreen() {
     try {
       setLoading(true);
       
-      // 1. Trouver le joueur par email
+      // 1. Trouver le joueur
       const players = await api.getPlayers();
-      const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+      let player: PlayerDTO | undefined;
       
-      if (!player) return;
+      if (isModal && playerId) {
+        player = players.find((p) => p.id === playerId);
+      } else if (!isModal && user) {
+        player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+      }
+      
+      if (!player) {
+        setLoading(false);
+        return;
+      }
       
       setCurrentPlayer(player);
       
@@ -140,7 +208,290 @@ export default function ProfileScreen() {
       
       setStats({ wins, losses, winRate });
       
-      // 4. Historique complet (matchs terminés + matchs remis)
+      // Calculer les statistiques avancées
+      // 1. État de forme (5 derniers matchs sans incidents)
+      const formMatches = completedMatchesForStats
+        .sort((a, b) => {
+          const dateA = a.played_at ? new Date(a.played_at).getTime() : new Date(a.scheduled_at || 0).getTime();
+          const dateB = b.played_at ? new Date(b.played_at).getTime() : new Date(b.scheduled_at || 0).getTime();
+          return dateB - dateA; // Plus récent en premier
+        })
+        .slice(0, 5); // 5 derniers matchs
+      
+      const form: Array<'win' | 'loss'> = formMatches.map((match) => {
+        const isPlayerA = match.player_a_id === player.id;
+        const playerScore = isPlayerA ? match.score_a! : match.score_b!;
+        const opponentScore = isPlayerA ? match.score_b! : match.score_a!;
+        return playerScore > opponentScore ? 'win' : 'loss';
+      });
+      
+      // 2. Série actuelle (win/loss streak)
+      let currentStreak: { type: 'win' | 'loss', count: number } = { type: 'win', count: 0 };
+      if (completedMatchesForStats.length > 0) {
+        const sortedByDate = [...completedMatchesForStats].sort((a, b) => {
+          const dateA = a.played_at ? new Date(a.played_at).getTime() : new Date(a.scheduled_at || 0).getTime();
+          const dateB = b.played_at ? new Date(b.played_at).getTime() : new Date(b.scheduled_at || 0).getTime();
+          return dateB - dateA; // Plus récent en premier
+        });
+        
+        const mostRecent = sortedByDate[0];
+        const isPlayerA = mostRecent.player_a_id === player.id;
+        const playerScore = isPlayerA ? mostRecent.score_a! : mostRecent.score_b!;
+        const opponentScore = isPlayerA ? mostRecent.score_b! : mostRecent.score_a!;
+        const won = playerScore > opponentScore;
+        
+        currentStreak.type = won ? 'win' : 'loss';
+        currentStreak.count = 1;
+        
+        for (let i = 1; i < sortedByDate.length; i++) {
+          const match = sortedByDate[i];
+          const isPlayerA2 = match.player_a_id === player.id;
+          const playerScore2 = isPlayerA2 ? match.score_a! : match.score_b!;
+          const opponentScore2 = isPlayerA2 ? match.score_b! : match.score_a!;
+          const won2 = playerScore2 > opponentScore2;
+          
+          if ((won && won2) || (!won && !won2)) {
+            currentStreak.count++;
+          } else {
+            break;
+          }
+        }
+      }
+      
+      // 3. Meilleure série de victoires et pire série de défaites (sans incidents)
+      let bestStreak: { type: 'win' | 'loss', count: number, matches: any[] } = { type: 'win', count: 0, matches: [] };
+      let worstStreak: { type: 'win' | 'loss', count: number, matches: any[] } = { type: 'loss', count: 0, matches: [] };
+      
+      if (completedMatchesForStats.length > 0) {
+        const sortedByDate = [...completedMatchesForStats].sort((a, b) => {
+          const dateA = a.played_at ? new Date(a.played_at).getTime() : new Date(a.scheduled_at || 0).getTime();
+          const dateB = b.played_at ? new Date(b.played_at).getTime() : new Date(b.scheduled_at || 0).getTime();
+          return dateB - dateA; // Plus récent en premier
+        });
+        
+        let currentWinStreak = 0;
+        let currentLossStreak = 0;
+        let maxWinStreak = 0;
+        let maxLossStreak = 0;
+        let currentWinStreakMatches: any[] = [];
+        let currentLossStreakMatches: any[] = [];
+        let bestWinStreakMatches: any[] = [];
+        let worstLossStreakMatches: any[] = [];
+        
+        for (const match of sortedByDate) {
+          const isPlayerA = match.player_a_id === player.id;
+          const playerScore = isPlayerA ? match.score_a! : match.score_b!;
+          const opponentScore = isPlayerA ? match.score_b! : match.score_a!;
+          const won = playerScore > opponentScore;
+          
+          if (won) {
+            currentWinStreak++;
+            currentWinStreakMatches.push(match);
+            currentLossStreak = 0;
+            currentLossStreakMatches = [];
+            if (currentWinStreak > maxWinStreak) {
+              maxWinStreak = currentWinStreak;
+              bestWinStreakMatches = [...currentWinStreakMatches];
+            }
+          } else {
+            currentLossStreak++;
+            currentLossStreakMatches.push(match);
+            currentWinStreak = 0;
+            currentWinStreakMatches = [];
+            if (currentLossStreak > maxLossStreak) {
+              maxLossStreak = currentLossStreak;
+              worstLossStreakMatches = [...currentLossStreakMatches];
+            }
+          }
+        }
+        
+        bestStreak = { type: 'win', count: maxWinStreak, matches: bestWinStreakMatches.reverse() }; // Plus ancien en premier
+        worstStreak = { type: 'loss', count: maxLossStreak, matches: worstLossStreakMatches.reverse() };
+      }
+      
+      // 2. Meilleur et pire adversaire
+      const opponentStats = new Map<string, { wins: number, losses: number, matchList: any[], player: PlayerDTO }>();
+      
+      completedMatchesForStats.forEach((match) => {
+        const isPlayerA = match.player_a_id === player.id;
+        const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+        const opponent = players.find((p) => p.id === opponentId);
+        if (!opponent) return;
+        
+        const opponentName = `${opponent.first_name} ${opponent.last_name}`;
+        const playerScore = isPlayerA ? match.score_a! : match.score_b!;
+        const opponentScore = isPlayerA ? match.score_b! : match.score_a!;
+        const won = playerScore > opponentScore;
+        
+        if (!opponentStats.has(opponentName)) {
+          opponentStats.set(opponentName, { wins: 0, losses: 0, matchList: [], player: opponent });
+        }
+        const stats = opponentStats.get(opponentName)!;
+        stats.matchList.push(match);
+        if (won) {
+          stats.wins++;
+        } else {
+          stats.losses++;
+        }
+      });
+      
+      let bestOpponent = { name: '', winRate: 0, matches: 0, wins: 0, losses: 0, matchList: [] as any[], player: null as PlayerDTO | null };
+      let worstOpponent = { name: '', winRate: 100, matches: 0, wins: 0, losses: 0, matchList: [] as any[], player: null as PlayerDTO | null };
+      let rival = { name: '', matches: 0, wins: 0, losses: 0, matchList: [] as any[], player: null as PlayerDTO | null };
+      
+      opponentStats.forEach((stats, name) => {
+        const total = stats.wins + stats.losses;
+        if (total >= 2) { // Au moins 2 matchs pour être significatif
+          const winRate = (stats.wins / total) * 100;
+          if (winRate > bestOpponent.winRate) {
+            bestOpponent = { name, winRate: Math.round(winRate), matches: total, wins: stats.wins, losses: stats.losses, matchList: stats.matchList, player: stats.player };
+          }
+          // Pour la bête noire : prioriser le nombre de défaites, puis le taux de victoire le plus bas, puis le plus de matchs
+          const isWorse = 
+            stats.losses > worstOpponent.losses || // Plus de défaites
+            (stats.losses === worstOpponent.losses && winRate < worstOpponent.winRate) || // Même nombre de défaites mais pire taux
+            (stats.losses === worstOpponent.losses && winRate === worstOpponent.winRate && total > worstOpponent.matches); // Même nombre de défaites et même taux mais plus de matchs
+          
+          if (isWorse) {
+            worstOpponent = { name, winRate: Math.round(winRate), matches: total, wins: stats.wins, losses: stats.losses, matchList: stats.matchList, player: stats.player };
+          }
+        }
+        
+        // Rival : adversaire avec le plus grand nombre de matchs total
+        if (total > rival.matches) {
+          rival = { name, matches: total, wins: stats.wins, losses: stats.losses, matchList: stats.matchList, player: stats.player };
+        }
+      });
+      
+      // 3. Total de points (Golden Ranking) - calculer depuis toutes les saisons
+      let totalPoints = 0;
+      const allSeasons = await api.getSeasons();
+      const currentYear = new Date().getFullYear();
+      
+      for (const season of allSeasons) {
+        const seasonYear = new Date(season.start_date).getFullYear();
+        if (seasonYear === currentYear) {
+          const seasonMatches = matches.filter((m) => {
+            // Vérifier si le match appartient à cette saison (par date)
+            const matchDate = m.played_at ? new Date(m.played_at) : new Date(m.scheduled_at || 0);
+            const seasonStart = new Date(season.start_date);
+            const seasonEnd = new Date(season.end_date);
+            return matchDate >= seasonStart && matchDate <= seasonEnd;
+          });
+          
+          seasonMatches.forEach((match) => {
+            if (match.score_a !== null && match.score_b !== null && 
+                !(match.score_a === 0 && match.score_b === 0) &&
+                !match.no_show_player_id && !match.retired_player_id && !match.delayed_player_id) {
+              const isPlayerA = match.player_a_id === player.id;
+              const playerScore = isPlayerA ? match.score_a : match.score_b;
+              const opponentScore = isPlayerA ? match.score_b : match.score_a;
+              
+              if (playerScore > opponentScore) {
+                totalPoints += 3; // Victoire = 3 points
+              } else if (playerScore === opponentScore) {
+                totalPoints += 1; // Match nul = 1 point (si applicable)
+              }
+            }
+          });
+        }
+      }
+      
+      // 4. Position dans le classement (calculer depuis le ranking)
+      let rankingPosition = 0;
+      try {
+        const allPlayers = await api.getPlayers();
+        // Calculer les points de tous les joueurs pour l'année en cours
+        const playerRankings = await Promise.all(
+          allPlayers.map(async (p) => {
+            let points = 0;
+            for (const season of allSeasons) {
+              const seasonYear = new Date(season.start_date).getFullYear();
+              if (seasonYear === currentYear) {
+                const seasonMatches = matches.filter((m) => {
+                  const matchDate = m.played_at ? new Date(m.played_at) : new Date(m.scheduled_at || 0);
+                  const seasonStart = new Date(season.start_date);
+                  const seasonEnd = new Date(season.end_date);
+                  return matchDate >= seasonStart && matchDate <= seasonEnd;
+                });
+                
+                seasonMatches.forEach((match) => {
+                  if (match.score_a !== null && match.score_b !== null && 
+                      !(match.score_a === 0 && match.score_b === 0) &&
+                      !match.no_show_player_id && !match.retired_player_id && !match.delayed_player_id) {
+                    const isPlayerA = match.player_a_id === p.id;
+                    const playerScore = isPlayerA ? match.score_a : match.score_b;
+                    const opponentScore = isPlayerA ? match.score_b : match.score_a;
+                    
+                    if (playerScore > opponentScore) {
+                      points += 3;
+                    } else if (playerScore === opponentScore) {
+                      points += 1;
+                    }
+                  }
+                });
+              }
+            }
+            return { playerId: p.id, points };
+          })
+        );
+        
+        // Trier par points décroissants
+        playerRankings.sort((a, b) => b.points - a.points);
+        
+        // Trouver la position du joueur
+        const position = playerRankings.findIndex((r) => r.playerId === player.id);
+        rankingPosition = position >= 0 ? position + 1 : 0;
+      } catch (error) {
+        console.error('Erreur calcul position ranking:', error);
+      }
+      
+      setAdvancedStats({
+        currentStreak,
+        bestStreak,
+        worstStreak,
+        bestOpponent,
+        worstOpponent,
+        rival,
+        totalPoints,
+        rankingPosition,
+        form,
+      });
+      
+      // 4. Prochain match (à venir, non joué)
+      const upcomingMatches = playerMatches.filter(
+        (m) => {
+          if (!m.scheduled_at) return false;
+          if (new Date(m.scheduled_at) <= new Date()) return false;
+          
+          // Vérifier si le match a été joué ou a un cas spécial
+          const hasScore = (m.score_a !== null && m.score_a !== undefined) || 
+                          (m.score_b !== null && m.score_b !== undefined);
+          const hasSpecialStatus = m.no_show_player_id || m.retired_player_id || m.delayed_player_id;
+          
+          return !hasScore && !hasSpecialStatus;
+        }
+      );
+      
+      upcomingMatches.sort((a, b) => 
+        new Date(a.scheduled_at!).getTime() - new Date(b.scheduled_at!).getTime()
+      );
+      
+      if (upcomingMatches.length > 0) {
+        const match = upcomingMatches[0];
+        const opponentId = match.player_a_id === player.id ? match.player_b_id : match.player_a_id;
+        const opponent = players.find((p) => p.id === opponentId);
+        
+        if (opponent) {
+          setNextMatch({ match, opponent });
+        } else {
+          setNextMatch(null);
+        }
+      } else {
+        setNextMatch(null);
+      }
+      
+      // 5. Historique complet (matchs terminés + matchs remis)
       const completedMatchesForHistory = playerMatches.filter(
         (m) => {
           // Matchs avec score (terminés)
@@ -203,6 +554,12 @@ export default function ProfileScreen() {
     loadData();
   }, [loadData]);
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  }, [loadData]);
+
   const handleLogout = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Alert.alert('Déconnexion', 'Êtes-vous sûr ?', [
@@ -219,7 +576,7 @@ export default function ProfileScreen() {
   };
 
   const handleUpdateNextBoxStatus = async (status: string | null) => {
-    if (!currentPlayer) return;
+    if (!currentPlayer || isModal) return; // Pas de modification en mode modal
     
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     
@@ -255,7 +612,7 @@ export default function ProfileScreen() {
   };
 
   const handleEditProfile = () => {
-    if (!currentPlayer) return;
+    if (!currentPlayer || isModal) return; // Pas d'édition en mode modal
     
     setEditForm({
       email: currentPlayer.email || '',
@@ -311,6 +668,43 @@ export default function ProfileScreen() {
     }
   };
 
+  const openMatchDetailsModal = (title: string, matches: any[], players: PlayerDTO[]) => {
+    if (!currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    const matchDetails = matches.map((match) => {
+      const isPlayerA = match.player_a_id === currentPlayer.id;
+      const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+      const opponent = players.find((p) => p.id === opponentId);
+      
+      const playerScore = isPlayerA ? match.score_a! : match.score_b!;
+      const opponentScore = isPlayerA ? match.score_b! : match.score_a!;
+      const matchDate = match.played_at 
+        ? new Date(match.played_at) 
+        : (match.scheduled_at ? new Date(match.scheduled_at) : new Date());
+      
+      return {
+        match,
+        opponent: opponent ? `${opponent.first_name} ${opponent.last_name}` : 'Inconnu',
+        score: `${playerScore}-${opponentScore}`,
+        date: matchDate,
+        won: playerScore > opponentScore,
+      };
+    });
+    
+    setMatchDetailsModal({
+      visible: true,
+      title,
+      matches: matchDetails,
+    });
+  };
+
+  const closeMatchDetailsModal = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setMatchDetailsModal({ visible: false, title: '', matches: [] });
+  };
+
   // Filtrer et trier les matchs
   const filteredMatches = recentMatches
     .filter((match) => {
@@ -334,32 +728,29 @@ export default function ProfileScreen() {
       return true;
     })
     .sort((a, b) => {
+      let result = 0;
       switch (sortBy) {
         case 'date':
-          return b.date.getTime() - a.date.getTime();
+          result = a.date.getTime() - b.date.getTime();
+          break;
         case 'opponent':
-          return a.opponent.localeCompare(b.opponent);
+          result = a.opponent.localeCompare(b.opponent);
+          break;
         case 'score':
           const [scoreA1, scoreA2] = a.score.split('-').map(Number);
           const [scoreB1, scoreB2] = b.score.split('-').map(Number);
-          return (scoreB1 - scoreB2) - (scoreA1 - scoreA2);
+          result = (scoreA1 - scoreA2) - (scoreB1 - scoreB2);
+          break;
         default:
           return 0;
       }
+      return sortDirection === 'desc' ? -result : result;
     });
 
-  if (loading) {
-    return (
-      <ThemedView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={PRIMARY_COLOR} />
-        </View>
-      </ThemedView>
-    );
-  }
+  // Ne pas afficher un écran de chargement complet, on affichera un spinner discret dans le contenu
 
-  // Vue publique (non connecté)
-  if (!isAuthenticated) {
+  // Vue publique (non connecté) - seulement si pas en mode modal
+  if (!isModal && !isAuthenticated) {
     return (
       <ThemedView style={styles.container}>
         <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
@@ -440,27 +831,56 @@ export default function ProfileScreen() {
     );
   }
 
-  // Vue connectée (personnalisée)
-  return (
-    <ThemedView style={styles.container}>
+  // Contenu du profil
+  const profileContent = (
+    <>
       <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingTop: Math.max(insets.top, 20) + 20 },
-        ]}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header avec profil */}
-        <View style={styles.profileHeader}>
-          <TouchableOpacity
-            style={[styles.editIconButton, { backgroundColor: colors.text + '08' }]}
-            onPress={handleEditProfile}
-            activeOpacity={0.7}
-          >
-            <IconSymbol name="pencil.circle.fill" size={28} color={colors.text} />
-          </TouchableOpacity>
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.text + '80'} />
+          <ThemedText style={[styles.loadingText, { color: colors.text, opacity: 0.5 }]}>
+            Chargement...
+          </ThemedText>
+        </View>
+      ) : (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingTop: Math.max(insets.top, 20) + 20 },
+          ]}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            !isModal ? (
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={colors.text + '80'}
+                colors={[colors.text + '80']}
+              />
+            ) : undefined
+          }
+        >
+          {/* Header avec profil */}
+          <View style={[styles.profileHeader, isModal && styles.profileHeaderModal]}>
+          {!isModal && (
+            <TouchableOpacity
+              style={[styles.editIconButton, { backgroundColor: colors.text + '08' }]}
+              onPress={handleEditProfile}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="pencil.circle.fill" size={28} color={colors.text} />
+            </TouchableOpacity>
+          )}
+          {isModal && onClose && (
+            <TouchableOpacity
+              style={[styles.editIconButton, { backgroundColor: colors.text + '08' }]}
+              onPress={onClose}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="xmark" size={28} color={colors.text} />
+            </TouchableOpacity>
+          )}
           
           <PlayerAvatar
             firstName={currentPlayer?.first_name || user?.name.split(' ')[0] || 'User'}
@@ -471,7 +891,7 @@ export default function ProfileScreen() {
           />
           {currentPlayer && (
             <>
-              <ThemedText style={styles.profileName}>
+              <ThemedText style={[styles.profileName, isModal && styles.profileNameModal]}>
                 {currentPlayer.first_name} {currentPlayer.last_name}
               </ThemedText>
               <ThemedText style={[styles.profileEmail, { color: colors.text, opacity: 0.6 }]}>
@@ -479,7 +899,7 @@ export default function ProfileScreen() {
               </ThemedText>
               
               {/* Badges en ligne */}
-              <View style={styles.badgesContainer}>
+              <View style={[styles.badgesContainer, isModal && styles.badgesContainerModal]}>
                 {currentPlayer.current_box && (
                   <View style={[styles.infoBadge, styles.boxBadge, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR + '40' }]}>
                     <IconSymbol name="square.grid.2x2.fill" size={14} color={PRIMARY_COLOR} />
@@ -495,6 +915,22 @@ export default function ProfileScreen() {
                       {currentPlayer.schedule_preference === 'tot' ? '🌅 Tôt' : '🌙 Tard'}
                     </ThemedText>
                   </View>
+                )}
+                
+                {advancedStats.rankingPosition > 0 && (
+                  <TouchableOpacity
+                    style={[styles.infoBadge, { backgroundColor: '#fbbf24' + '20', borderColor: '#fbbf24' + '40' }]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      router.push('/(tabs)/ranking');
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <IconSymbol name="trophy.fill" size={14} color="#fbbf24" />
+                    <ThemedText style={[styles.infoBadgeText, { color: '#fbbf24' }]}>
+                      #{advancedStats.rankingPosition}
+                    </ThemedText>
+                  </TouchableOpacity>
                 )}
               </View>
             </>
@@ -521,99 +957,133 @@ export default function ProfileScreen() {
           />
         )}
 
+        {/* Prochain match */}
+        {!isModal && nextMatch && (
+          <View style={[styles.card, { backgroundColor: colors.background }]}>
+            <ThemedText style={styles.sectionTitle}>Prochain match</ThemedText>
+            <View style={styles.nextMatchContainer}>
+              <View style={styles.nextMatchInfo}>
+                <View style={styles.nextMatchOpponent}>
+                  <PlayerAvatar
+                    firstName={nextMatch.opponent.first_name}
+                    lastName={nextMatch.opponent.last_name}
+                    pictureUrl={nextMatch.opponent.picture}
+                    size={50}
+                    backgroundColor={AVATAR_COLOR}
+                  />
+                  <View style={styles.nextMatchDetails}>
+                    <ThemedText style={[styles.nextMatchName, { color: colors.text }]}>
+                      {nextMatch.opponent.first_name} {nextMatch.opponent.last_name}
+                    </ThemedText>
+                    <View style={styles.nextMatchDate}>
+                      <IconSymbol name="calendar" size={14} color={colors.text + '60'} />
+                      <ThemedText style={[styles.nextMatchDateText, { color: colors.text, opacity: 0.7 }]}>
+                        {formatDate(new Date(nextMatch.match.scheduled_at!))}
+                      </ThemedText>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </View>
+        )}
+
         {/* Next Box Status */}
         {currentPlayer?.current_box && (
           <View style={[styles.card, { backgroundColor: colors.background }]}>
             <ThemedText style={styles.sectionTitle}>Prochain Box</ThemedText>
             <ThemedText style={[styles.sectionSubtitle, { color: colors.text, opacity: 0.6 }]}>
-              Souhaitez-vous continuer dans le prochain box ?
+              {isModal ? 'Statut pour le prochain box' : 'Souhaitez-vous continuer dans le prochain box ?'}
             </ThemedText>
             
             <View style={styles.statusButtons}>
-              <TouchableOpacity
-                style={[
-                  styles.statusButton,
-                  currentPlayer.current_box.next_box_status === 'continue' && [
-                    styles.statusButtonActive,
-                    { backgroundColor: '#10b981' + '20', borderColor: '#10b981' },
-                  ],
-                  { borderColor: colors.text + '20' },
-                ]}
-                onPress={() => handleUpdateNextBoxStatus('continue')}
-                disabled={updatingStatus}
-                activeOpacity={0.7}
-              >
-                <IconSymbol 
-                  name="checkmark.circle.fill" 
-                  size={24} 
-                  color={currentPlayer.current_box.next_box_status === 'continue' ? '#10b981' : colors.text + '60'} 
-                />
-                <ThemedText 
+                <TouchableOpacity
                   style={[
-                    styles.statusButtonText,
-                    currentPlayer.current_box.next_box_status === 'continue' && { color: '#10b981', fontWeight: '600' },
+                    styles.statusButton,
+                    currentPlayer.current_box.next_box_status === 'continue' && [
+                      styles.statusButtonActive,
+                      { backgroundColor: '#10b981' + '20', borderColor: '#10b981' },
+                    ],
+                    { borderColor: colors.text + '20' },
+                    isModal && styles.statusButtonReadonly,
                   ]}
+                  onPress={isModal ? undefined : () => handleUpdateNextBoxStatus('continue')}
+                  disabled={isModal || updatingStatus}
+                  activeOpacity={isModal ? 1 : 0.7}
                 >
-                  Continuer
-                </ThemedText>
-              </TouchableOpacity>
+                  <IconSymbol 
+                    name="checkmark.circle.fill" 
+                    size={24} 
+                    color={currentPlayer.current_box.next_box_status === 'continue' ? '#10b981' : colors.text + '60'} 
+                  />
+                  <ThemedText 
+                    style={[
+                      styles.statusButtonText,
+                      currentPlayer.current_box.next_box_status === 'continue' && { color: '#10b981', fontWeight: '600' },
+                    ]}
+                  >
+                    Continuer
+                  </ThemedText>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[
-                  styles.statusButton,
-                  currentPlayer.current_box.next_box_status === 'stop' && [
-                    styles.statusButtonActive,
-                    { backgroundColor: '#ef4444' + '20', borderColor: '#ef4444' },
-                  ],
-                  { borderColor: colors.text + '20' },
-                ]}
-                onPress={() => handleUpdateNextBoxStatus('stop')}
-                disabled={updatingStatus}
-                activeOpacity={0.7}
-              >
-                <IconSymbol 
-                  name="xmark.circle.fill" 
-                  size={24} 
-                  color={currentPlayer.current_box.next_box_status === 'stop' ? '#ef4444' : colors.text + '60'} 
-                />
-                <ThemedText 
+                <TouchableOpacity
                   style={[
-                    styles.statusButtonText,
-                    currentPlayer.current_box.next_box_status === 'stop' && { color: '#ef4444', fontWeight: '600' },
+                    styles.statusButton,
+                    currentPlayer.current_box.next_box_status === 'stop' && [
+                      styles.statusButtonActive,
+                      { backgroundColor: '#ef4444' + '20', borderColor: '#ef4444' },
+                    ],
+                    { borderColor: colors.text + '20' },
+                    isModal && styles.statusButtonReadonly,
                   ]}
+                  onPress={isModal ? undefined : () => handleUpdateNextBoxStatus('stop')}
+                  disabled={isModal || updatingStatus}
+                  activeOpacity={isModal ? 1 : 0.7}
                 >
-                  Arrêter
-                </ThemedText>
-              </TouchableOpacity>
+                  <IconSymbol 
+                    name="xmark.circle.fill" 
+                    size={24} 
+                    color={currentPlayer.current_box.next_box_status === 'stop' ? '#ef4444' : colors.text + '60'} 
+                  />
+                  <ThemedText 
+                    style={[
+                      styles.statusButtonText,
+                      currentPlayer.current_box.next_box_status === 'stop' && { color: '#ef4444', fontWeight: '600' },
+                    ]}
+                  >
+                    Arrêter
+                  </ThemedText>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[
-                  styles.statusButton,
-                  !currentPlayer.current_box.next_box_status && [
-                    styles.statusButtonActive,
-                    { backgroundColor: colors.text + '10', borderColor: colors.text + '30' },
-                  ],
-                  { borderColor: colors.text + '20' },
-                ]}
-                onPress={() => handleUpdateNextBoxStatus(null)}
-                disabled={updatingStatus}
-                activeOpacity={0.7}
-              >
-                <IconSymbol 
-                  name="questionmark.circle.fill" 
-                  size={24} 
-                  color={!currentPlayer.current_box.next_box_status ? colors.text : colors.text + '60'} 
-                />
-                <ThemedText 
+                <TouchableOpacity
                   style={[
-                    styles.statusButtonText,
-                    !currentPlayer.current_box.next_box_status && { fontWeight: '600' },
+                    styles.statusButton,
+                    !currentPlayer.current_box.next_box_status && [
+                      styles.statusButtonActive,
+                      { backgroundColor: colors.text + '10', borderColor: colors.text + '30' },
+                    ],
+                    { borderColor: colors.text + '20' },
+                    isModal && styles.statusButtonReadonly,
                   ]}
+                  onPress={isModal ? undefined : () => handleUpdateNextBoxStatus(null)}
+                  disabled={isModal || updatingStatus}
+                  activeOpacity={isModal ? 1 : 0.7}
                 >
-                  Indécis
-                </ThemedText>
-              </TouchableOpacity>
-            </View>
+                  <IconSymbol 
+                    name="questionmark.circle.fill" 
+                    size={24} 
+                    color={!currentPlayer.current_box.next_box_status ? colors.text : colors.text + '60'} 
+                  />
+                  <ThemedText 
+                    style={[
+                      styles.statusButtonText,
+                      !currentPlayer.current_box.next_box_status && { fontWeight: '600' },
+                    ]}
+                  >
+                    Indécis
+                  </ThemedText>
+                </TouchableOpacity>
+              </View>
           </View>
         )}
 
@@ -648,6 +1118,322 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* État de forme */}
+        {advancedStats.form.length > 0 && (
+          <View style={[styles.card, { backgroundColor: colors.background }]}>
+            <ThemedText style={styles.sectionTitle}>État de forme</ThemedText>
+            <View style={styles.formContainer}>
+              <View style={styles.formPills}>
+                {advancedStats.form.map((result, index) => (
+                  <View
+                    key={index}
+                    style={[
+                      styles.formPill,
+                      {
+                        backgroundColor: result === 'win' ? '#10b981' : '#ef4444',
+                      },
+                    ]}
+                  />
+                ))}
+                {/* Remplir jusqu'à 5 si moins de matchs */}
+                {Array.from({ length: 5 - advancedStats.form.length }).map((_, index) => (
+                  <View
+                    key={`empty-${index}`}
+                    style={[
+                      styles.formPill,
+                      {
+                        backgroundColor: colors.text + '15',
+                        borderWidth: 1,
+                        borderColor: colors.text + '30',
+                      },
+                    ]}
+                  />
+                ))}
+              </View>
+              <ThemedText style={[styles.formLabel, { color: colors.text, opacity: 0.6 }]}>
+                5 derniers matchs
+              </ThemedText>
+            </View>
+          </View>
+        )}
+
+        {/* Statistiques avancées */}
+        <View style={[styles.card, { backgroundColor: colors.background }]}>
+          <ThemedText style={styles.sectionTitle}>Statistiques avancées</ThemedText>
+          
+          {/* Série actuelle - ligne complète */}
+          {advancedStats.currentStreak.count > 0 && (
+            <View style={[styles.currentStreakBox, { backgroundColor: colors.text + '05' }]}>
+              <IconSymbol 
+                name={advancedStats.currentStreak.type === 'win' ? 'arrow.up.circle.fill' : 'arrow.down.circle.fill'} 
+                size={24} 
+                color={advancedStats.currentStreak.type === 'win' ? '#10b981' : '#ef4444'} 
+              />
+              <View style={styles.currentStreakContent}>
+                <ThemedText style={[styles.currentStreakValue, { color: colors.text }]}>
+                  {advancedStats.currentStreak.count} {advancedStats.currentStreak.type === 'win' ? 'victoires' : 'défaites'} de suite
+                </ThemedText>
+                <ThemedText style={[styles.currentStreakLabel, { color: colors.text, opacity: 0.6 }]}>
+                  Série actuelle
+                </ThemedText>
+              </View>
+            </View>
+          )}
+          
+          {/* Meilleure et pire série - côte à côte */}
+          <View style={styles.streaksRow}>
+            {advancedStats.bestStreak.count > 0 && (
+              <TouchableOpacity
+                style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                onPress={async () => {
+                  const players = await api.getPlayers();
+                  openMatchDetailsModal(
+                    `Meilleure série de victoires (${advancedStats.bestStreak.count})`,
+                    advancedStats.bestStreak.matches,
+                    players
+                  );
+                }}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="flame.fill" size={20} color="#10b981" />
+                <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
+                  {advancedStats.bestStreak.count}
+                </ThemedText>
+                <ThemedText style={[styles.advancedStatLabel, { color: colors.text, opacity: 0.6 }]}>
+                  Meilleure série V
+                </ThemedText>
+              </TouchableOpacity>
+            )}
+            
+            {advancedStats.worstStreak.count > 0 && (
+              <TouchableOpacity
+                style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                onPress={async () => {
+                  const players = await api.getPlayers();
+                  openMatchDetailsModal(
+                    `Pire série de défaites (${advancedStats.worstStreak.count})`,
+                    advancedStats.worstStreak.matches,
+                    players
+                  );
+                }}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="exclamationmark.triangle.fill" size={20} color="#ef4444" />
+                <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
+                  {advancedStats.worstStreak.count}
+                </ThemedText>
+                <ThemedText style={[styles.advancedStatLabel, { color: colors.text, opacity: 0.6 }]}>
+                  Pire série D
+                </ThemedText>
+              </TouchableOpacity>
+            )}
+          </View>
+          
+          {advancedStats.totalPoints > 0 && (
+            <View style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', marginTop: 12 }]}>
+              <IconSymbol name="trophy.fill" size={20} color="#fbbf24" />
+              <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
+                {advancedStats.totalPoints}
+              </ThemedText>
+              <ThemedText style={[styles.advancedStatLabel, { color: colors.text, opacity: 0.6 }]}>
+                Points (année)
+              </ThemedText>
+            </View>
+          )}
+        </View>
+
+        {/* Adversaires */}
+        {(advancedStats.rival.name || advancedStats.bestOpponent.name || advancedStats.worstOpponent.name) && (
+          <View style={[styles.card, { backgroundColor: colors.background }]}>
+            <ThemedText style={styles.sectionTitle}>Adversaires</ThemedText>
+            
+            {/* Adversaires - tous côte à côte */}
+            <View style={styles.opponentsRow}>
+              {advancedStats.rival.name && advancedStats.rival.player && (
+                <TouchableOpacity
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                  onPress={async () => {
+                    const players = await api.getPlayers();
+                    openMatchDetailsModal(
+                      `Matchs contre ${advancedStats.rival.name}`,
+                      advancedStats.rival.matchList,
+                      players
+                    );
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.opponentIconContainer}>
+                    <IconSymbol name="person.2.fill" size={20} color={PRIMARY_COLOR} />
+                  </View>
+                  <ThemedText 
+                    style={[styles.opponentTitle, { color: colors.text }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    Meilleur ami
+                  </ThemedText>
+                <View style={styles.opponentAvatarContainer}>
+                  <PlayerAvatar
+                    firstName={advancedStats.rival.player.first_name}
+                    lastName={advancedStats.rival.player.last_name}
+                    pictureUrl={advancedStats.rival.player.picture}
+                    size={40}
+                    backgroundColor={AVATAR_COLOR}
+                  />
+                </View>
+                <View style={styles.opponentNamesContainer}>
+                  <ThemedText 
+                    style={[styles.opponentFirstName, { color: colors.text }]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {advancedStats.rival.player.first_name}
+                  </ThemedText>
+                  <ThemedText 
+                    style={[styles.opponentLastName, { color: colors.text }]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {advancedStats.rival.player.last_name}
+                  </ThemedText>
+                </View>
+                  <ThemedText style={[styles.opponentStats, { color: colors.text, opacity: 0.6 }]}>
+                    {advancedStats.rival.matches} matchs •{' '}
+                    <ThemedText style={{ color: '#10b981', fontWeight: '600' }}>
+                      {advancedStats.rival.wins}V
+                    </ThemedText>
+                    {' '}-{' '}
+                    <ThemedText style={{ color: '#ef4444', fontWeight: '600' }}>
+                      {advancedStats.rival.losses}D
+                    </ThemedText>
+                  </ThemedText>
+                </TouchableOpacity>
+              )}
+              {advancedStats.bestOpponent.name && advancedStats.bestOpponent.player && (
+                <TouchableOpacity
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                  onPress={async () => {
+                    const players = await api.getPlayers();
+                    openMatchDetailsModal(
+                      `Matchs contre ${advancedStats.bestOpponent.name}`,
+                      advancedStats.bestOpponent.matchList,
+                      players
+                    );
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.opponentIconContainer}>
+                    <IconSymbol name="star.fill" size={20} color="#10b981" />
+                  </View>
+                  <ThemedText 
+                    style={[styles.opponentTitle, { color: colors.text }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    Meilleur adversaire
+                  </ThemedText>
+                  <View style={styles.opponentAvatarContainer}>
+                    <PlayerAvatar
+                      firstName={advancedStats.bestOpponent.player.first_name}
+                      lastName={advancedStats.bestOpponent.player.last_name}
+                      pictureUrl={advancedStats.bestOpponent.player.picture}
+                      size={40}
+                      backgroundColor={AVATAR_COLOR}
+                    />
+                  </View>
+                  <View style={styles.opponentNamesContainer}>
+                    <ThemedText 
+                      style={[styles.opponentFirstName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.bestOpponent.player.first_name}
+                    </ThemedText>
+                    <ThemedText 
+                      style={[styles.opponentLastName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.bestOpponent.player.last_name}
+                    </ThemedText>
+                  </View>
+                  <ThemedText style={[styles.opponentStats, { color: colors.text, opacity: 0.6 }]}>
+                    {advancedStats.bestOpponent.matches} matchs •{' '}
+                    <ThemedText style={{ color: '#10b981', fontWeight: '600' }}>
+                      {advancedStats.bestOpponent.wins}V
+                    </ThemedText>
+                    {' '}-{' '}
+                    <ThemedText style={{ color: '#ef4444', fontWeight: '600' }}>
+                      {advancedStats.bestOpponent.losses}D
+                    </ThemedText>
+                  </ThemedText>
+                </TouchableOpacity>
+              )}
+              
+              {advancedStats.worstOpponent.name && advancedStats.worstOpponent.name !== advancedStats.bestOpponent.name && advancedStats.worstOpponent.player && (
+                <TouchableOpacity
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                  onPress={async () => {
+                    const players = await api.getPlayers();
+                    openMatchDetailsModal(
+                      `Matchs contre ${advancedStats.worstOpponent.name}`,
+                      advancedStats.worstOpponent.matchList,
+                      players
+                    );
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.opponentIconContainer}>
+                    <IconSymbol name="exclamationmark.triangle.fill" size={20} color="#ef4444" />
+                  </View>
+                  <ThemedText 
+                    style={[styles.opponentTitle, { color: colors.text }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    Bête noire
+                  </ThemedText>
+                  <View style={styles.opponentAvatarContainer}>
+                    <PlayerAvatar
+                      firstName={advancedStats.worstOpponent.player.first_name}
+                      lastName={advancedStats.worstOpponent.player.last_name}
+                      pictureUrl={advancedStats.worstOpponent.player.picture}
+                      size={40}
+                      backgroundColor={AVATAR_COLOR}
+                    />
+                  </View>
+                  <View style={styles.opponentNamesContainer}>
+                    <ThemedText 
+                      style={[styles.opponentFirstName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.worstOpponent.player.first_name}
+                    </ThemedText>
+                    <ThemedText 
+                      style={[styles.opponentLastName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.worstOpponent.player.last_name}
+                    </ThemedText>
+                  </View>
+                  <ThemedText style={[styles.opponentStats, { color: colors.text, opacity: 0.6 }]}>
+                    {advancedStats.worstOpponent.matches} matchs •{' '}
+                    <ThemedText style={{ color: '#10b981', fontWeight: '600' }}>
+                      {advancedStats.worstOpponent.wins}V
+                    </ThemedText>
+                    {' '}-{' '}
+                    <ThemedText style={{ color: '#ef4444', fontWeight: '600' }}>
+                      {advancedStats.worstOpponent.losses}D
+                    </ThemedText>
+                  </ThemedText>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* Historique des matchs */}
         {recentMatches.length > 0 && (
           <View style={[styles.card, { backgroundColor: colors.background }]}>
@@ -673,17 +1459,17 @@ export default function ProfileScreen() {
             </View>
 
             {/* Filtres et tri */}
-            <View style={styles.filterRow}>
-              <View style={styles.filterGroup}>
-                <ThemedText style={[styles.filterLabel, { color: colors.text, opacity: 0.6 }]}>
-                  Résultat:
+            <View style={styles.filtersContainer}>
+              {/* Filtre par résultat - Segmented Control */}
+              <View style={styles.filterSection}>
+                <ThemedText style={[styles.filterSectionTitle, { color: colors.text, opacity: 0.7 }]}>
+                  Résultat
                 </ThemedText>
-                <View style={styles.filterButtons}>
+                <View style={[styles.segmentedControl, { backgroundColor: colors.text + '08' }]}>
                   <TouchableOpacity
                     style={[
-                      styles.filterButton,
-                      filterBy === 'all' && [styles.filterButtonActive, { backgroundColor: PRIMARY_COLOR }],
-                      { borderColor: colors.text + '20' },
+                      styles.segmentButton,
+                      filterBy === 'all' && [styles.segmentButtonActive, { backgroundColor: colors.text + '15' }],
                     ]}
                     onPress={() => {
                       setFilterBy('all');
@@ -692,8 +1478,9 @@ export default function ProfileScreen() {
                   >
                     <ThemedText 
                       style={[
-                        styles.filterButtonText, 
-                        filterBy === 'all' && { color: '#000', fontWeight: '600' }
+                        styles.segmentButtonText, 
+                        { color: filterBy === 'all' ? colors.text : colors.text + '60' },
+                        filterBy === 'all' && { fontWeight: '600' }
                       ]}
                     >
                       Tous
@@ -701,105 +1488,176 @@ export default function ProfileScreen() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[
-                      styles.filterButton,
-                      filterBy === 'won' && [styles.filterButtonActive, { backgroundColor: PRIMARY_COLOR }],
-                      { borderColor: colors.text + '20' },
+                      styles.segmentButton,
+                      filterBy === 'won' && [styles.segmentButtonActive, { backgroundColor: '#10b981' + '20' }],
                     ]}
                     onPress={() => {
                       setFilterBy('won');
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                   >
+                    <IconSymbol 
+                      name="checkmark.circle.fill" 
+                      size={16} 
+                      color={filterBy === 'won' ? '#10b981' : colors.text + '60'} 
+                    />
                     <ThemedText 
                       style={[
-                        styles.filterButtonText, 
-                        filterBy === 'won' && { color: '#000', fontWeight: '600' }
+                        styles.segmentButtonText, 
+                        { color: filterBy === 'won' ? '#10b981' : colors.text + '60' },
+                        filterBy === 'won' && { fontWeight: '600' }
                       ]}
                     >
-                      V
+                      Victoires
                     </ThemedText>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[
-                      styles.filterButton,
-                      filterBy === 'lost' && [styles.filterButtonActive, { backgroundColor: PRIMARY_COLOR }],
-                      { borderColor: colors.text + '20' },
+                      styles.segmentButton,
+                      filterBy === 'lost' && [styles.segmentButtonActive, { backgroundColor: '#ef4444' + '20' }],
                     ]}
                     onPress={() => {
                       setFilterBy('lost');
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                   >
+                    <IconSymbol 
+                      name="xmark.circle.fill" 
+                      size={16} 
+                      color={filterBy === 'lost' ? '#ef4444' : colors.text + '60'} 
+                    />
                     <ThemedText 
                       style={[
-                        styles.filterButtonText, 
-                        filterBy === 'lost' && { color: '#000', fontWeight: '600' }
+                        styles.segmentButtonText, 
+                        { color: filterBy === 'lost' ? '#ef4444' : colors.text + '60' },
+                        filterBy === 'lost' && { fontWeight: '600' }
                       ]}
                     >
-                      D
+                      Défaites
                     </ThemedText>
                   </TouchableOpacity>
                 </View>
               </View>
 
-              <View style={styles.filterGroup}>
-                <ThemedText style={[styles.filterLabel, { color: colors.text, opacity: 0.6 }]}>
-                  Trier:
+              {/* Tri - Boutons horizontaux */}
+              <View style={styles.filterSection}>
+                <ThemedText style={[styles.filterSectionTitle, { color: colors.text, opacity: 0.7 }]}>
+                  Trier par
                 </ThemedText>
-                <View style={styles.filterButtons}>
+                <View style={styles.sortButtons}>
                   <TouchableOpacity
                     style={[
-                      styles.filterButton,
-                      sortBy === 'date' && [styles.filterButtonActive, { backgroundColor: PRIMARY_COLOR }],
+                      styles.sortButton,
+                      sortBy === 'date' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
                       { borderColor: colors.text + '20' },
                     ]}
                     onPress={() => {
-                      setSortBy('date');
+                      if (sortBy === 'date') {
+                        setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
+                      } else {
+                        setSortBy('date');
+                        setSortDirection('desc');
+                      }
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                   >
                     <IconSymbol 
                       name="calendar" 
-                      size={14} 
-                      color={sortBy === 'date' ? '#000' : colors.text} 
+                      size={16} 
+                      color={sortBy === 'date' ? PRIMARY_COLOR : colors.text + '60'} 
                     />
+                    <ThemedText 
+                      style={[
+                        styles.sortButtonText, 
+                        { color: sortBy === 'date' ? PRIMARY_COLOR : colors.text + '60' },
+                        sortBy === 'date' && { fontWeight: '600' }
+                      ]}
+                    >
+                      Date
+                    </ThemedText>
+                    {sortBy === 'date' && (
+                      <IconSymbol 
+                        name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
+                        size={12} 
+                        color={PRIMARY_COLOR} 
+                      />
+                    )}
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[
-                      styles.filterButton,
-                      sortBy === 'opponent' && [styles.filterButtonActive, { backgroundColor: PRIMARY_COLOR }],
+                      styles.sortButton,
+                      sortBy === 'opponent' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
                       { borderColor: colors.text + '20' },
                     ]}
                     onPress={() => {
-                      setSortBy('opponent');
+                      if (sortBy === 'opponent') {
+                        setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
+                      } else {
+                        setSortBy('opponent');
+                        setSortDirection('desc');
+                      }
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                   >
                     <IconSymbol 
                       name="person.fill" 
-                      size={14} 
-                      color={sortBy === 'opponent' ? '#000' : colors.text} 
+                      size={16} 
+                      color={sortBy === 'opponent' ? PRIMARY_COLOR : colors.text + '60'} 
                     />
+                    <ThemedText 
+                      style={[
+                        styles.sortButtonText, 
+                        { color: sortBy === 'opponent' ? PRIMARY_COLOR : colors.text + '60' },
+                        sortBy === 'opponent' && { fontWeight: '600' }
+                      ]}
+                    >
+                      Adversaire
+                    </ThemedText>
+                    {sortBy === 'opponent' && (
+                      <IconSymbol 
+                        name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
+                        size={12} 
+                        color={PRIMARY_COLOR} 
+                      />
+                    )}
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[
-                      styles.filterButton,
-                      sortBy === 'score' && [styles.filterButtonActive, { backgroundColor: PRIMARY_COLOR }],
+                      styles.sortButton,
+                      sortBy === 'score' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
                       { borderColor: colors.text + '20' },
                     ]}
                     onPress={() => {
-                      setSortBy('score');
+                      if (sortBy === 'score') {
+                        setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
+                      } else {
+                        setSortBy('score');
+                        setSortDirection('desc');
+                      }
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                   >
+                    <IconSymbol 
+                      name="chart.bar.fill" 
+                      size={16} 
+                      color={sortBy === 'score' ? PRIMARY_COLOR : colors.text + '60'} 
+                    />
                     <ThemedText 
                       style={[
-                        styles.filterButtonText, 
-                        sortBy === 'score' && { color: '#000', fontWeight: '600' }
+                        styles.sortButtonText, 
+                        { color: sortBy === 'score' ? PRIMARY_COLOR : colors.text + '60' },
+                        sortBy === 'score' && { fontWeight: '600' }
                       ]}
                     >
-                      Δ
+                      Score
                     </ThemedText>
+                    {sortBy === 'score' && (
+                      <IconSymbol 
+                        name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
+                        size={12} 
+                        color={PRIMARY_COLOR} 
+                      />
+                    )}
                   </TouchableOpacity>
                 </View>
               </View>
@@ -882,7 +1740,107 @@ export default function ProfileScreen() {
         </View>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
+        </ScrollView>
+      )}
+
+      {/* Modal de détails des matchs */}
+      <Modal
+        visible={matchDetailsModal.visible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={closeMatchDetailsModal}
+      >
+        <ThemedView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <ThemedText style={styles.modalTitle}>{matchDetailsModal.title}</ThemedText>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={closeMatchDetailsModal}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="xmark.circle.fill" size={28} color={colors.text + '60'} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={styles.modalContent}
+            contentContainerStyle={styles.modalContentContainer}
+            showsVerticalScrollIndicator={false}
+          >
+            {matchDetailsModal.matches.length === 0 ? (
+              <View style={styles.modalEmpty}>
+                <ThemedText style={[styles.modalEmptyText, { color: colors.text, opacity: 0.6 }]}>
+                  Aucun match trouvé
+                </ThemedText>
+              </View>
+            ) : (
+              matchDetailsModal.matches.map((match, index) => (
+                <View
+                  key={index}
+                  style={[
+                    styles.modalMatchItem,
+                    index !== matchDetailsModal.matches.length - 1 && [
+                      styles.modalMatchBorder,
+                      { borderBottomColor: colors.text + '15' },
+                    ],
+                  ]}
+                >
+                  <View style={styles.modalMatchLeft}>
+                    <ThemedText style={[styles.modalMatchOpponent, { color: colors.text }]}>
+                      {match.opponent}
+                    </ThemedText>
+                    <ThemedText style={[styles.modalMatchDate, { color: colors.text, opacity: 0.5 }]}>
+                      {formatDate(match.date)}
+                    </ThemedText>
+                  </View>
+                  <View
+                    style={[
+                      styles.modalMatchScore,
+                      {
+                        backgroundColor: match.won ? '#10b981' + '20' : '#ef4444' + '20',
+                      },
+                    ]}
+                  >
+                    <ThemedText
+                      style={[
+                        styles.modalMatchScoreText,
+                        {
+                          color: match.won ? '#10b981' : '#ef4444',
+                          fontWeight: '700',
+                        },
+                      ]}
+                    >
+                      {match.score}
+                    </ThemedText>
+                  </View>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </ThemedView>
+      </Modal>
+    </>
+  );
+
+  // Vue connectée (personnalisée)
+  if (isModal) {
+    return (
+      <Modal
+        visible={true}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={onClose}
+      >
+        <ThemedView style={styles.container}>
+          {profileContent}
+        </ThemedView>
+      </Modal>
+    );
+  }
+
+  return (
+    <ThemedView style={styles.container}>
+      {profileContent}
     </ThemedView>
   );
 }
@@ -901,12 +1859,23 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    minHeight: 400,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 15,
+    fontWeight: '500',
+    opacity: 0.7,
   },
   profileHeader: {
     alignItems: 'center',
     marginBottom: 28,
     marginTop: 8,
     position: 'relative',
+  },
+  profileHeaderModal: {
+    marginTop: 4,
+    marginBottom: 20,
   },
   editIconButton: {
     position: 'absolute',
@@ -936,6 +1905,11 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     marginTop: 12,
   },
+  profileNameModal: {
+    fontSize: 20,
+    marginTop: 6,
+    marginBottom: 4,
+  },
   profileEmail: {
     fontSize: 15,
     fontWeight: '400',
@@ -947,6 +1921,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     marginTop: 4,
+  },
+  badgesContainerModal: {
+    marginTop: 8,
+    marginBottom: 4,
   },
   infoBadge: {
     flexDirection: 'row',
@@ -1037,6 +2015,9 @@ const styles = StyleSheet.create({
   statusButtonActive: {
     borderWidth: 2,
   },
+  statusButtonReadonly: {
+    opacity: 0.7,
+  },
   statusButtonText: {
     fontSize: 13,
     fontWeight: '400',
@@ -1057,41 +2038,62 @@ const styles = StyleSheet.create({
     fontSize: 15,
     paddingVertical: 0,
   },
-  filterRow: {
-    flexDirection: 'column',
-    gap: 12,
+  filtersContainer: {
+    gap: 16,
     marginBottom: 16,
   },
-  filterGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  filterSection: {
     gap: 8,
   },
-  filterLabel: {
+  filterSectionTitle: {
     fontSize: 13,
-    fontWeight: '500',
-    minWidth: 60,
+    fontWeight: '600',
+    marginBottom: 4,
   },
-  filterButtons: {
+  segmentedControl: {
     flexDirection: 'row',
-    gap: 6,
-    flex: 1,
+    borderRadius: 10,
+    padding: 4,
+    gap: 4,
   },
-  filterButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
+  segmentButton: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 40,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    gap: 6,
   },
-  filterButtonActive: {
+  segmentButtonActive: {
     borderWidth: 0,
   },
-  filterButtonText: {
-    fontSize: 13,
-    fontWeight: '400',
+  segmentButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  sortButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  sortButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    gap: 6,
+  },
+  sortButtonActive: {
+    borderWidth: 1.5,
+  },
+  sortButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
   },
   statsGrid: {
     flexDirection: 'row',
@@ -1190,5 +2192,243 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#000',
+  },
+  nextMatchContainer: {
+    marginTop: 8,
+  },
+  nextMatchInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  nextMatchOpponent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  nextMatchDetails: {
+    flex: 1,
+  },
+  nextMatchName: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  nextMatchDate: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  nextMatchDateText: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  advancedStatsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  currentStreakBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    gap: 12,
+    marginBottom: 12,
+  },
+  currentStreakContent: {
+    flex: 1,
+  },
+  currentStreakValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  currentStreakLabel: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  streaksRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  advancedStatBox: {
+    flex: 1,
+    minWidth: '45%',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    gap: 8,
+  },
+  advancedStatValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  advancedStatLabel: {
+    fontSize: 12,
+    fontWeight: '400',
+    textAlign: 'center',
+  },
+  formContainer: {
+    alignItems: 'center',
+    gap: 12,
+  },
+  formPills: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  formPill: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  formLabel: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  opponentsContainer: {
+    gap: 12,
+  },
+  opponentsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
+  rivalBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    gap: 12,
+  },
+  rivalContent: {
+    flex: 1,
+  },
+  rivalName: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  rivalLabel: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  opponentBox: {
+    padding: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
+  opponentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  opponentIconContainer: {
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  opponentTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 12,
+    minHeight: 32, // Hauteur minimale pour 2 lignes
+    textAlign: 'center',
+  },
+  opponentAvatarContainer: {
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  opponentNamesContainer: {
+    alignItems: 'center',
+    marginBottom: 4,
+    width: '100%',
+  },
+  opponentFirstName: {
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  opponentLastName: {
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  opponentStats: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  // Styles pour le modal de détails
+  modalContainer: {
+    flex: 1,
+    paddingTop: 60,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    flex: 1,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalContent: {
+    flex: 1,
+  },
+  modalContentContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 40,
+  },
+  modalEmpty: {
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  modalEmptyText: {
+    fontSize: 16,
+    fontWeight: '400',
+  },
+  modalMatchItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  modalMatchBorder: {
+    borderBottomWidth: 1,
+  },
+  modalMatchLeft: {
+    flex: 1,
+  },
+  modalMatchOpponent: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  modalMatchDate: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  modalMatchScore: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    minWidth: 60,
+    alignItems: 'center',
+  },
+  modalMatchScoreText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

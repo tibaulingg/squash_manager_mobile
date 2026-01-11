@@ -51,7 +51,11 @@ export interface MatchDTO {
   points_a: number | null;
   points_b: number | null;
   played_at: string | null;
-  delayed_player_id: string | null; // GUID
+  delayed_player_id: string | null; // GUID - rempli seulement quand le report est accepté et le match remis
+  delayed_requested_by: string | null; // GUID - indique qui a demandé le report
+  delayed_status: string | null; // 'pending', 'accepted', 'rejected', 'cancelled'
+  delayed_requested_at: string | null;
+  delayed_resolved_at: string | null;
   retired_player_id: string | null; // GUID
   no_show_player_id: string | null; // GUID
   running: boolean;

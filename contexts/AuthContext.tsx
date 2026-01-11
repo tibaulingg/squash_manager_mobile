@@ -14,7 +14,7 @@ interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
-  signup: (firstName: string, lastName: string, email: string, password: string, phone: string, desiredBox: string) => Promise<void>;
+  signup: (firstName: string, lastName: string, email: string, password: string, phone: string, desiredBox: string, schedulePreference?: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -74,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const signup = async (firstName: string, lastName: string, email: string, password: string, phone: string, desiredBox: string) => {
+  const signup = async (firstName: string, lastName: string, email: string, password: string, phone: string, desiredBox: string, schedulePreference?: string) => {
     try {
       // Vérifier si le joueur existe déjà
       const players = await api.getPlayers();
@@ -95,6 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           last_name: lastName,
           email: email,
           phone: phone,
+          schedule_preference: schedulePreference,
         });
       }
       

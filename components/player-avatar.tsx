@@ -8,6 +8,7 @@ interface PlayerAvatarProps {
   pictureUrl?: string | null;
   size?: number;
   backgroundColor?: string;
+  textColor?: string;
 }
 
 const getInitials = (firstName: string, lastName: string): string => {
@@ -19,7 +20,8 @@ export function PlayerAvatar({
   lastName, 
   pictureUrl, 
   size = 40,
-  backgroundColor = '#9ca3af' 
+  backgroundColor = '#9ca3af',
+  textColor 
 }: PlayerAvatarProps) {
   const borderRadius = size / 2;
 
@@ -47,7 +49,7 @@ export function PlayerAvatar({
         }
       ]}
     >
-      <ThemedText style={[styles.initials, { fontSize: size * 0.35 }]}>
+      <ThemedText style={[styles.initials, { fontSize: size * 0.28, color: textColor || '#fff' }]}>
         {getInitials(firstName, lastName)}
       </ThemedText>
     </View>
@@ -63,7 +65,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   initials: {
-    color: '#fff',
     fontWeight: '600',
   },
 });

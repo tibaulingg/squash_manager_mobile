@@ -1,3 +1,4 @@
+import * as Haptics from 'expo-haptics';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -12,14 +13,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as Haptics from 'expo-haptics';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAuth } from '@/contexts/AuthContext';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 
 interface AuthModalProps {
   visible: boolean;
@@ -46,6 +46,7 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
   const [signupPhone, setSignupPhone] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
   const [showSignupPassword, setShowSignupPassword] = useState(false);
+  const [signupSchedulePreference, setSignupSchedulePreference] = useState<string>('peu_importe');
 
   const handleClose = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -103,7 +104,8 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
         signupEmail.trim().toLowerCase(),
         signupPassword,
         signupPhone.trim(),
-        '' // desiredBox - paramètre conservé pour compatibilité mais vide
+        '', // desiredBox - paramètre conservé pour compatibilité mais vide
+        signupSchedulePreference
       );
       onClose();
       // Reset form
@@ -113,6 +115,7 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
       setSignupPhone('');
       setSignupPassword('');
       setShowSignupPassword(false);
+      setSignupSchedulePreference('peu_importe');
     } catch (error: any) {
       Alert.alert('Erreur', error.message || 'Impossible de créer le compte');
     } finally {
@@ -328,6 +331,92 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
                   </View>
                 </View>
 
+                {/* Préférence de planning - version compacte */}
+                <View style={styles.inputGroup}>
+                  <ThemedText style={[styles.label, { color: colors.text + '80', fontSize: 13 }]}>
+                    Préférence de planning
+                  </ThemedText>
+                  <View style={styles.preferenceButtons}>
+                    <TouchableOpacity
+                      style={[
+                        styles.preferenceButtonSmall,
+                        { 
+                          backgroundColor: signupSchedulePreference === 'tot' ? PRIMARY_COLOR : colors.text + '05',
+                          borderColor: signupSchedulePreference === 'tot' ? PRIMARY_COLOR : colors.text + '15',
+                        },
+                      ]}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSignupSchedulePreference('tot');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <ThemedText style={styles.preferenceEmojiSmall}>🌅</ThemedText>
+                      <ThemedText
+                        style={[
+                          styles.preferenceButtonTextSmall,
+                          { color: signupSchedulePreference === 'tot' ? '#000' : colors.text },
+                          signupSchedulePreference === 'tot' && { fontWeight: '700' },
+                        ]}
+                      >
+                        Tôt
+                      </ThemedText>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.preferenceButtonSmall,
+                        { 
+                          backgroundColor: signupSchedulePreference === 'tard' ? PRIMARY_COLOR : colors.text + '05',
+                          borderColor: signupSchedulePreference === 'tard' ? PRIMARY_COLOR : colors.text + '15',
+                        },
+                      ]}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSignupSchedulePreference('tard');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <ThemedText style={styles.preferenceEmojiSmall}>🌙</ThemedText>
+                      <ThemedText
+                        style={[
+                          styles.preferenceButtonTextSmall,
+                          { color: signupSchedulePreference === 'tard' ? '#000' : colors.text },
+                          signupSchedulePreference === 'tard' && { fontWeight: '700' },
+                        ]}
+                      >
+                        Tard
+                      </ThemedText>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.preferenceButtonSmall,
+                        { 
+                          backgroundColor: signupSchedulePreference === 'peu_importe' ? PRIMARY_COLOR : colors.text + '05',
+                          borderColor: signupSchedulePreference === 'peu_importe' ? PRIMARY_COLOR : colors.text + '15',
+                        },
+                      ]}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSignupSchedulePreference('peu_importe');
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <ThemedText style={styles.preferenceEmojiSmall}>🤷</ThemedText>
+                      <ThemedText
+                        style={[
+                          styles.preferenceButtonTextSmall,
+                          { color: signupSchedulePreference === 'peu_importe' ? '#000' : colors.text },
+                          signupSchedulePreference === 'peu_importe' && { fontWeight: '700' },
+                        ]}
+                      >
+                        Flexible
+                      </ThemedText>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
                 <TouchableOpacity
                   style={[styles.submitButton, { backgroundColor: PRIMARY_COLOR }]}
                   onPress={handleSignup}
@@ -492,6 +581,28 @@ const styles = StyleSheet.create({
   switchButton: {
     fontSize: 15,
     fontWeight: '600',
+  },
+  preferenceButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  preferenceButtonSmall: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  preferenceEmojiSmall: {
+    fontSize: 18,
+  },
+  preferenceButtonTextSmall: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
   },
 });
 
