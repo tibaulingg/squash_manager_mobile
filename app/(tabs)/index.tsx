@@ -1,10 +1,11 @@
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ProfileScreen from '@/app/(tabs)/profil';
+import { ActivityFeed } from '@/components/activity-feed';
 import { AuthModal } from '@/components/auth-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -67,6 +68,20 @@ export default function HomeScreen() {
   const [allPlayers, setAllPlayers] = useState<PlayerDTO[]>([]);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [showPlayerModal, setShowPlayerModal] = useState(false);
+  const [followedPlayersMatches, setFollowedPlayersMatches] = useState<any[]>([]);
+  const [followedPlayers, setFollowedPlayers] = useState<string[]>([]); // IDs des joueurs suivis
+  const [matchReactions, setMatchReactions] = useState<{ [matchId: string]: { [reaction: string]: number } }>({});
+  const [userReactions, setUserReactions] = useState<{ [matchId: string]: string | null }>({});
+  const [matchComments, setMatchComments] = useState<{ [matchId: string]: any[] }>({});
+  const isLoadingFollowedPlayersRef = useRef(false);
+  const [boxRanking, setBoxRanking] = useState<Array<{
+    player: PlayerDTO;
+    points: number;
+    wins: number;
+    losses: number;
+    matches: number;
+    position: number;
+  }>>([]);
 
   const loadData = useCallback(async () => {
     if (!isAuthenticated || !user) {
@@ -180,7 +195,88 @@ export default function HomeScreen() {
           });
         
         setBoxMatches(myBoxMatches);
+
+        // Calculer le classement du box
+        const boxPlayerIds = new Set<string>();
+        currentBoxMatches.forEach((m) => {
+          boxPlayerIds.add(m.player_a_id);
+          boxPlayerIds.add(m.player_b_id);
+        });
+        
+        const boxPlayers = players.filter((p) => boxPlayerIds.has(p.id));
+        
+        // Calculer les statistiques pour chaque joueur
+        const playerStats = new Map<string, { points: number; wins: number; losses: number; matches: number }>();
+        boxPlayers.forEach((p) => playerStats.set(p.id, { points: 0, wins: 0, losses: 0, matches: 0 }));
+        
+        currentBoxMatches.forEach((match) => {
+          if (match.score_a !== null && match.score_b !== null && 
+              !(match.score_a === 0 && match.score_b === 0)) {
+            // Calculer les points : 2 points par set gagné
+            const pointsA = match.score_a * 2;
+            const pointsB = match.score_b * 2;
+            
+            const statsA = playerStats.get(match.player_a_id)!;
+            const statsB = playerStats.get(match.player_b_id)!;
+            
+            statsA.points += pointsA;
+            statsB.points += pointsB;
+            statsA.matches += 1;
+            statsB.matches += 1;
+            
+            // Déterminer le gagnant
+            if (match.score_a > match.score_b) {
+              statsA.wins += 1;
+              statsB.losses += 1;
+            } else if (match.score_b > match.score_a) {
+              statsB.wins += 1;
+              statsA.losses += 1;
+            }
+            
+            playerStats.set(match.player_a_id, statsA);
+            playerStats.set(match.player_b_id, statsB);
+          }
+        });
+        
+        // Créer le classement
+        const ranking = boxPlayers
+          .map((p) => {
+            const stats = playerStats.get(p.id) || { points: 0, wins: 0, losses: 0, matches: 0 };
+            return {
+              player: p,
+              points: stats.points,
+              wins: stats.wins,
+              losses: stats.losses,
+              matches: stats.matches,
+              position: 0,
+            };
+          })
+          .sort((a, b) => b.points - a.points)
+          .map((item, index) => ({
+            ...item,
+            position: index + 1,
+          }))
+          .slice(0, 5); // Top 5 seulement
+        
+        setBoxRanking(ranking);
+      } else {
+        setBoxRanking([]);
       }
+
+      // Charger les matchs récents pour le feed (tous les matchs joués récemment, pas seulement ceux du joueur)
+      const allRecentMatches = matches
+        .filter(m => {
+          // Inclure les matchs joués (avec score ou statut spécial)
+          const hasScore = m.score_a !== null && m.score_b !== null && (m.score_a! > 0 || m.score_b! > 0);
+          const hasSpecialStatus = !!(m.no_show_player_id || m.retired_player_id || m.delayed_player_id);
+          return (hasScore || hasSpecialStatus) && m.played_at;
+        })
+        .sort((a, b) => {
+          const dateA = a.scheduled_at ? new Date(a.scheduled_at).getTime() : (a.played_at ? new Date(a.played_at).getTime() : 0);
+          const dateB = b.scheduled_at ? new Date(b.scheduled_at).getTime() : (b.played_at ? new Date(b.played_at).getTime() : 0);
+          return dateB - dateA; // Plus récent en premier
+        })
+        .slice(0, 20); // Limiter à 20 matchs récents (non utilisé pour le moment)
     } catch (error) {
       console.error('Erreur chargement données:', error);
       Alert.alert('Erreur', 'Impossible de charger les données');
@@ -190,21 +286,148 @@ export default function HomeScreen() {
     }
   }, [user, refreshing]);
 
+  // Charger la liste des joueurs suivis et leurs matchs
+  const loadFollowedPlayers = useCallback(async () => {
+    if (!currentPlayer?.id) {
+      setFollowedPlayers([]);
+      setFollowedPlayersMatches([]);
+      return;
+    }
+    
+    // Éviter les appels multiples simultanés
+    if (isLoadingFollowedPlayersRef.current) {
+      return;
+    }
+    
+    isLoadingFollowedPlayersRef.current = true;
+    
+    try {
+      // Récupérer les joueurs suivis
+      const following = await api.getFollowing(currentPlayer.id);
+      const followedIds = following.map(p => p.id);
+      setFollowedPlayers(followedIds);
+      
+      // Si aucun joueur suivi, vider les matchs
+      if (followedIds.length === 0) {
+        setFollowedPlayersMatches([]);
+        return;
+      }
+      
+      // Récupérer les matchs des joueurs suivis
+      const matches = await api.getFollowedPlayersMatches(currentPlayer.id, 50);
+      
+      // Filtrer les matchs : seulement ceux des 7 derniers jours avec résultats valides
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      
+      const validMatches = matches.filter((match) => {
+        // Vérifier que le match a été joué (played_at existe)
+        if (!match.played_at) return false;
+        
+        const playedDate = new Date(match.played_at);
+        // Vérifier que c'est dans les 7 derniers jours
+        if (playedDate < oneWeekAgo) return false;
+        
+        // Vérifier que le match a un résultat valide (pas 0-0, pas de cas spéciaux)
+        const hasValidScore = match.score_a !== null && match.score_b !== null &&
+                             !(match.score_a === 0 && match.score_b === 0);
+        const hasSpecialStatus = !!(match.no_show_player_id || match.retired_player_id || match.delayed_player_id);
+        
+        // Inclure seulement les matchs avec score valide et sans statut spécial
+        return hasValidScore && !hasSpecialStatus;
+      });
+      
+      const players = await api.getPlayers();
+      
+      // Charger les réactions pour tous les matchs valides
+      if (validMatches.length > 0) {
+        try {
+          const matchIds = validMatches.map(m => m.id);
+          const reactionsData = await api.getMatchReactions(matchIds, currentPlayer.id);
+
+          // Transformer les données de réactions
+          const reactionsMap: { [matchId: string]: { [reaction: string]: number } } = {};
+          const userReactionsMap: { [matchId: string]: string | null } = {};
+          
+          Object.entries(reactionsData).forEach(([matchId, data]) => {
+            reactionsMap[matchId] = data.reactions || {};
+            userReactionsMap[matchId] = data.userReaction || null;
+          });
+          
+          setMatchReactions(reactionsMap);
+          setUserReactions(userReactionsMap);
+        } catch (error) {
+          console.error('Erreur chargement réactions:', error);
+        }
+      }
+      
+      // Transformer les matchs pour l'ActivityFeed
+      const feedItems = validMatches.map((match) => {
+        const playerA = players.find(p => p.id === match.player_a_id);
+        const playerB = players.find(p => p.id === match.player_b_id);
+        
+        if (!playerA || !playerB) return null;
+        
+        // Déterminer qui a joué ce match (le joueur suivi)
+        const playedBy = followedIds.includes(match.player_a_id) ? playerA : playerB;
+        
+        // Déterminer si c'est un cas spécial
+        const isWin = playedBy.id === match.player_a_id 
+          ? (match.score_a !== null && match.score_b !== null && match.score_a > match.score_b)
+          : (match.score_a !== null && match.score_b !== null && match.score_b > match.score_a);
+        const specialStatus = getMatchSpecialStatus(match, playedBy.id, isWin);
+        const isSpecialCase = !!(match.no_show_player_id || match.retired_player_id || match.delayed_player_id);
+        
+        return {
+          match,
+          playerA,
+          playerB,
+          playerAScore: match.score_a,
+          playerBScore: match.score_b,
+          isSpecialCase,
+          specialStatus,
+          playedBy,
+          playedAt: match.scheduled_at ? new Date(match.scheduled_at) : (match.played_at ? new Date(match.played_at) : new Date()),
+        };
+      }).filter((item): item is NonNullable<typeof item> => item !== null);
+      
+      setFollowedPlayersMatches(feedItems);
+    } catch (error: any) {
+      console.error('Erreur chargement joueurs suivis:', error);
+      // Ne pas vider les états en cas d'erreur pour éviter les boucles
+      // Si l'API n'est pas encore implémentée, on ignore silencieusement
+      if (error.message?.includes('404') || error.message?.includes('Not Found')) {
+        console.log('Endpoint getFollowing non implémenté, ignoré');
+        setFollowedPlayers([]);
+        setFollowedPlayersMatches([]);
+      }
+    } finally {
+      isLoadingFollowedPlayersRef.current = false;
+    }
+  }, [currentPlayer?.id]);
+
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (currentPlayer?.id) {
+      loadFollowedPlayers();
+    }
+  }, [currentPlayer?.id, loadFollowedPlayers]);
 
   // Recharger les données quand on revient sur l'onglet
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [loadData])
+      loadFollowedPlayers();
+    }, [loadData, loadFollowedPlayers])
   );
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
-    await loadData();
+    await Promise.all([loadData(), loadFollowedPlayers()]);
   };
 
   const handleCall = async (phone: string) => {
@@ -226,6 +449,100 @@ export default function HomeScreen() {
   const handleViewBox = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push('/(tabs)/box');
+  };
+
+  const handleReaction = async (matchId: string, reaction: string) => {
+    if (!currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    try {
+      // Toggle reaction: si déjà réagi avec cette réaction, la retirer, sinon l'ajouter
+      const currentReaction = userReactions[matchId];
+      const newReaction = currentReaction === reaction ? null : reaction;
+      
+      // Appel API pour sauvegarder la réaction
+      await api.reactToMatch(matchId, currentPlayer.id, newReaction);
+      
+      // Mise à jour locale optimiste
+      setUserReactions(prev => ({
+        ...prev,
+        [matchId]: newReaction,
+      }));
+      
+      setMatchReactions(prev => {
+        const current = prev[matchId] || {};
+        const newCounts = { ...current };
+        
+        // Retirer l'ancienne réaction
+        if (currentReaction && newCounts[currentReaction]) {
+          newCounts[currentReaction] = Math.max(0, newCounts[currentReaction] - 1);
+          if (newCounts[currentReaction] === 0) {
+            delete newCounts[currentReaction];
+          }
+        }
+        
+        // Ajouter la nouvelle réaction
+        if (newReaction) {
+          newCounts[newReaction] = (newCounts[newReaction] || 0) + 1;
+        }
+        
+        return {
+          ...prev,
+          [matchId]: newCounts,
+        };
+      });
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      console.error('Erreur réaction:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la réaction');
+    }
+  };
+
+  const handleComment = async (matchId: string, text: string) => {
+    if (!currentPlayer) return;
+    
+    try {
+      const comment = await api.addMatchComment(matchId, currentPlayer.id, text);
+      
+      // Mettre à jour les commentaires locaux
+      setMatchComments(prev => ({
+        ...prev,
+        [matchId]: [...(prev[matchId] || []), comment],
+      }));
+    } catch (error: any) {
+      console.error('Erreur commentaire:', error);
+      throw error;
+    }
+  };
+
+  const handleLoadComments = async (matchId: string) => {
+    try {
+      return await api.getMatchComments(matchId);
+    } catch (error: any) {
+      console.error('Erreur chargement commentaires:', error);
+      // En cas d'erreur, retourner les commentaires locaux s'ils existent
+      return matchComments[matchId] || [];
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string, matchId: string) => {
+    if (!currentPlayer) return;
+    
+    try {
+      await api.deleteMatchComment(commentId, currentPlayer.id);
+      
+      // Mettre à jour les commentaires locaux
+      setMatchComments(prev => ({
+        ...prev,
+        [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
+      }));
+    } catch (error: any) {
+      console.error('Erreur suppression commentaire:', error);
+      Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
+    }
   };
 
   const handleRequestDelay = async (matchId: string) => {
@@ -291,6 +608,7 @@ export default function HomeScreen() {
       ]
     );
   };
+
 
   const handleCancelDelay = async (matchId: string) => {
     if (!currentPlayer) return;
@@ -440,7 +758,7 @@ export default function HomeScreen() {
         >
           <IconSymbol name="calendar.badge.exclamationmark" size={12} color={colors.text + '80'} />
           <ThemedText style={[styles.delayButtonTextSmall, { color: colors.text + '80' }]}>
-            Report
+            Reporter
           </ThemedText>
         </TouchableOpacity>
       );
@@ -704,7 +1022,7 @@ export default function HomeScreen() {
           </View>
 
           {/* Message d'information */}
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <View style={[styles.infoIconContainer, { backgroundColor: PRIMARY_COLOR + '15' }]}>
               <IconSymbol name="info.circle.fill" size={32} color={PRIMARY_COLOR} />
             </View>
@@ -716,7 +1034,7 @@ export default function HomeScreen() {
 
           {/* Formulaire d'inscription à la file */}
           {!myWaitingEntry && (
-            <View style={[styles.card, { backgroundColor: colors.background }]}>
+            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
               <ThemedText style={styles.cardTitle}>Rejoindre la file d'attente</ThemedText>
               
               <View style={styles.inputGroup}>
@@ -746,7 +1064,7 @@ export default function HomeScreen() {
 
           {/* Ma position dans la file */}
           {myWaitingEntry && (
-            <View style={[styles.card, { backgroundColor: colors.background }]}>
+            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
               <View style={[styles.statusIconContainer, { backgroundColor: '#10b981' + '15' }]}>
                 <IconSymbol name="checkmark.circle.fill" size={32} color="#10b981" />
               </View>
@@ -788,7 +1106,7 @@ export default function HomeScreen() {
           )}
 
           {/* Liste d'attente complète */}
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <ThemedText style={styles.cardTitle}>
               File d'attente ({waitingList.length} {waitingList.length > 1 ? 'personnes' : 'personne'})
             </ThemedText>
@@ -862,26 +1180,13 @@ export default function HomeScreen() {
         {/* Header d'accueil */}
         {currentPlayer && (
           <View style={[styles.welcomeHeader, { backgroundColor: colors.background }]}>
-            <View style={styles.welcomeTopSection}>
-              <View style={styles.welcomeTextContainer}>
-                <ThemedText style={styles.welcomeGreeting}>
-                  Bonjour, {currentPlayer.first_name} 👋
-                </ThemedText>
-                <ThemedText style={[styles.welcomeSubtitle, { color: colors.text + '60' }]}>
-                  {getDayOfWeek()} {new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}
-                </ThemedText>
-              </View>
-            </View>
-            
-            {currentPlayer.current_box && (
-              <View style={styles.statusRow}>
-                <View style={[styles.boxPill, { backgroundColor: PRIMARY_COLOR + '15' }]}>
-                  <IconSymbol name="square.grid.2x2.fill" size={12} color={PRIMARY_COLOR} />
-                  <ThemedText style={[styles.boxPillText, { color: PRIMARY_COLOR }]}>
-                    {currentPlayer.current_box.box_name}
-                  </ThemedText>
-                </View>
-                
+            <View style={styles.welcomeRow}>
+              <ThemedText style={styles.welcomeGreeting}>
+                Bonjour, {currentPlayer.first_name} 👋
+              </ThemedText>
+              
+              {/* Chip réinscrit à droite */}
+              {currentPlayer.current_box && (
                 <View
                   style={[
                     styles.statusPill,
@@ -892,6 +1197,13 @@ export default function HomeScreen() {
                           : currentPlayer.current_box.next_box_status === 'stop'
                           ? '#ef4444' + '20'
                           : colors.text + '10',
+                      borderWidth: 1,
+                      borderColor:
+                        currentPlayer.current_box.next_box_status === 'continue'
+                          ? '#10b981'
+                          : currentPlayer.current_box.next_box_status === 'stop'
+                          ? '#ef4444'
+                          : colors.text + '30',
                     },
                   ]}
                 >
@@ -932,91 +1244,14 @@ export default function HomeScreen() {
                       : 'Indécis'}
                   </ThemedText>
                 </View>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Prochain match */}
-        {nextMatch ? (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <View style={styles.cardHeader}>
-              <View style={styles.cardHeaderLeft}>
-                <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
-                  <IconSymbol name="calendar" size={18} color={PRIMARY_COLOR} />
-                </View>
-                <ThemedText style={styles.cardTitle}>Prochain match</ThemedText>
-              </View>
+              )}
             </View>
-            
-            <View style={styles.matchContent}>
-              <TouchableOpacity 
-                style={styles.matchOpponent}
-                onPress={() => {
-                  setSelectedPlayerId(nextMatch.opponent.id);
-                  setShowPlayerModal(true);
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.avatar, { backgroundColor: AVATAR_COLOR }]}>
-                  <ThemedText style={styles.avatarText}>
-                    {getInitials(nextMatch.opponent.first_name, nextMatch.opponent.last_name)}
-                  </ThemedText>
-                </View>
-                <View style={styles.opponentInfo}>
-                  <ThemedText style={styles.opponentName}>
-                    {nextMatch.opponent.first_name} {nextMatch.opponent.last_name}
-                  </ThemedText>
-                  {nextMatch.match.scheduled_at && new Date(nextMatch.match.scheduled_at) > new Date() && (
-                    <ThemedText style={[styles.dateText, { color: colors.text }]}>
-                      {formatDate(new Date(nextMatch.match.scheduled_at))}
-                    </ThemedText>
-                  )}
-                </View>
-              </TouchableOpacity>
-
-              {/* Actions de contact et report */}
-              <View style={styles.matchActions}>
-                <View style={styles.contactActions}>
-                  {nextMatch.opponent.phone && (
-                    <>
-                      <TouchableOpacity
-                        style={[styles.contactButton, { backgroundColor: colors.text + '08' }]}
-                        onPress={() => handleCall(nextMatch.opponent.phone!)}
-                        activeOpacity={0.7}
-                      >
-                        <IconSymbol name="phone.fill" size={14} color={colors.text} />
-                        <ThemedText style={[styles.contactButtonText, { color: colors.text }]}>
-                          Appeler
-                        </ThemedText>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.contactButton, { backgroundColor: colors.text + '08' }]}
-                        onPress={() => handleMessage(nextMatch.opponent.phone!)}
-                        activeOpacity={0.7}
-                      >
-                        <IconSymbol name="message.fill" size={14} color={colors.text} />
-                        <ThemedText style={[styles.contactButtonText, { color: colors.text }]}>
-                          Message
-                        </ThemedText>
-                      </TouchableOpacity>
-                    </>
-                  )}
-                  {renderDelayStatus(nextMatch.match, nextMatch.opponent)}
-                </View>
-              </View>
-            </View>
-          </View>
-        ) : (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <ThemedText style={styles.noMatch}>Aucun match programmé</ThemedText>
           </View>
         )}
 
         {/* Mon box */}
         {currentPlayer?.current_box && (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderLeft}>
                 <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
@@ -1053,7 +1288,7 @@ export default function HomeScreen() {
                       styles.matchItem,
                       index !== boxMatches.length - 1 && [
                         styles.matchItemBorder,
-                        { borderBottomColor: colors.text + '15' },
+                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
                       ],
                     ]}
                   >
@@ -1075,9 +1310,30 @@ export default function HomeScreen() {
                         <ThemedText style={styles.matchOpponentName}>
                           {item.opponent.first_name} {item.opponent.last_name}
                         </ThemedText>
-                        <ThemedText style={[styles.matchDate, { color: colors.text, opacity: 0.5 }]}>
-                          {item.match.scheduled_at ? formatDate(new Date(item.match.scheduled_at)) : 'Date non définie'}
-                        </ThemedText>
+                        {item.match.scheduled_at ? (() => {
+                          const date = new Date(item.match.scheduled_at);
+                          const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+                          const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+                          const day = days[date.getDay()];
+                          const month = months[date.getMonth()];
+                          const dayNumber = date.getDate();
+                          const hours = date.getHours().toString().padStart(2, '0');
+                          const minutes = date.getMinutes().toString().padStart(2, '0');
+                          return (
+                            <View style={styles.matchDateContainer}>
+                              <ThemedText style={[styles.matchDate, { color: colors.text }]}>
+                                {day} {dayNumber} {month}
+                              </ThemedText>
+                              <ThemedText style={[styles.matchTime, { color: colors.text, opacity: 0.5 }]}>
+                                {' • '}{hours}:{minutes}
+                              </ThemedText>
+                            </View>
+                          );
+                        })() : (
+                          <ThemedText style={[styles.matchDate, { color: colors.text, opacity: 0.5 }]}>
+                            Date non définie
+                          </ThemedText>
+                        )}
                       </View>
                   </TouchableOpacity>
                   <View style={styles.matchItemRight}>
@@ -1089,22 +1345,28 @@ export default function HomeScreen() {
                         const isWin = playerScore > opponentScore;
                         const specialStatus = getMatchSpecialStatus(item.match, currentPlayer.id, isWin);
                         const scoreText = formatMatchScore(item.match, currentPlayer.id, playerScore, opponentScore);
+                        
+                        // Vérifier si le match a des points (a été joué)
+                        const hasPoints = (item.match.points_a !== null && item.match.points_a !== undefined) ||
+                                         (item.match.points_b !== null && item.match.points_b !== undefined);
 
                         return (
-                          <View
-                            style={[
-                              styles.scoreTag,
-                              { backgroundColor: specialStatus.backgroundColor },
-                            ]}
-                          >
-                            <ThemedText
+                          <View style={styles.scoreTagContainer}>
+                            <View
                               style={[
-                                styles.scoreTagText,
-                                { color: specialStatus.textColor },
+                                styles.scoreTag,
+                                { backgroundColor: specialStatus.backgroundColor },
                               ]}
                             >
-                              {scoreText}
-                            </ThemedText>
+                              <ThemedText
+                                style={[
+                                  styles.scoreTagText,
+                                  { color: specialStatus.textColor },
+                                ]}
+                              >
+                                {scoreText}
+                              </ThemedText>
+                            </View>
                           </View>
                         );
                       })()
@@ -1128,6 +1390,138 @@ export default function HomeScreen() {
                 );
               })}
             </View>
+          </View>
+        )}
+
+        {/* Mini classement du box */}
+        {currentPlayer?.current_box && boxRanking.length > 0 && (
+          <View style={[styles.rankingCard, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <View style={[styles.cardHeader, { marginBottom: 8 }]}>
+              <View style={styles.cardHeaderLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20', width: 24, height: 24 }]}>
+                  <IconSymbol name="trophy.fill" size={14} color={PRIMARY_COLOR} />
+                </View>
+                <ThemedText style={[styles.cardTitle, { fontSize: 15 }]}>Classement {currentPlayer.current_box.box_name}</ThemedText>
+              </View>
+            </View>
+            
+            <View style={styles.rankingList}>
+              {/* Header */}
+              <View style={[styles.rankingItem, styles.rankingHeader]}>
+                <View style={styles.rankingPosition}>
+                  <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10 }]}>
+                    #
+                  </ThemedText>
+                </View>
+                <View style={styles.rankingPlayerInfo}>
+                  <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10 }]}>
+                    Joueur
+                  </ThemedText>
+                </View>
+                <View style={styles.rankingStats}>
+                  <View style={styles.rankingStatsRow}>
+                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 20, textAlign: 'right' }]}>
+                      M
+                    </ThemedText>
+                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 20, textAlign: 'right' }]}>
+                      {' '}V
+                    </ThemedText>
+                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 20, textAlign: 'right' }]}>
+                      {' '}D
+                    </ThemedText>
+                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 25, textAlign: 'right' }]}>
+                      {' '}pts
+                    </ThemedText>
+                  </View>
+                </View>
+              </View>
+              
+              {boxRanking.map((item, index) => {
+                const isFirst = item.position === 1;
+                const isLast = item.position === boxRanking.length;
+                const isCurrentUser = item.player.id === currentPlayer.id;
+                return (
+                  <View
+                    key={item.player.id}
+                    style={[
+                      styles.rankingItem,
+                      index !== boxRanking.length - 1 && [
+                        styles.rankingItemBorder,
+                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
+                      ],
+                    ]}
+                  >
+                    <View style={styles.rankingPosition}>
+                      <ThemedText style={[styles.rankingPositionText, { 
+                        color: isFirst ? '#10b981' : isLast ? '#ef4444' : colors.text + '60',
+                        fontSize: 11,
+                      }]}>
+                        #{item.position}
+                      </ThemedText>
+                    </View>
+                    <View style={styles.rankingPlayerInfo}>
+                      <ThemedText style={[styles.rankingPlayerName, { color: colors.text, fontSize: 12 }]} numberOfLines={1}>
+                        {item.player.first_name} {item.player.last_name}
+                      </ThemedText>
+                    </View>
+                    <View style={styles.rankingStats}>
+                      <View style={styles.rankingStatsRow}>
+                        <ThemedText style={[styles.rankingStatsText, { color: colors.text, opacity: 0.6, fontSize: 10, fontWeight: '500', minWidth: 20, textAlign: 'right' }]}>
+                          {item.matches}
+                        </ThemedText>
+                        <ThemedText style={[styles.rankingStatsText, { color: '#10b981', fontSize: 10, fontWeight: '500', minWidth: 20, textAlign: 'right' }]}>
+                          {item.wins}
+                        </ThemedText>
+                        <ThemedText style={[styles.rankingStatsText, { color: '#ef4444', fontSize: 10, fontWeight: '500', minWidth: 20, textAlign: 'right' }]}>
+                          {item.losses}
+                        </ThemedText>
+                        <ThemedText style={[styles.rankingStatsText, { color: colors.text, fontSize: 10, fontWeight: '500', minWidth: 25, textAlign: 'right' }]}>
+                          {item.points}
+                        </ThemedText>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
+        {/* Feed d'actualité - Matchs des joueurs suivis */}
+        {followedPlayersMatches.length > 0 && (
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardHeaderLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
+                  <IconSymbol name="sparkles" size={18} color={PRIMARY_COLOR} />
+                </View>
+                <ThemedText style={[styles.cardTitle, { fontSize: 15 }]}>Derniers matchs des joueurs suivis</ThemedText>
+              </View>
+            </View>
+
+            <ActivityFeed
+              matches={followedPlayersMatches}
+              currentPlayerId={currentPlayer?.id}
+              onPlayerPress={(playerId) => {
+                setSelectedPlayerId(playerId);
+                setShowPlayerModal(true);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+              onReaction={handleReaction}
+              reactions={matchReactions}
+              userReactions={userReactions}
+              onComment={handleComment}
+              onLoadComments={handleLoadComments}
+              onDeleteComment={handleDeleteComment}
+            />
+          </View>
+        )}
+        
+        {followedPlayersMatches.length === 0 && currentPlayer && (
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <ThemedText style={[styles.emptyText, { color: colors.text, opacity: 0.6 }]}>
+              Suivez des joueurs pour voir leurs matchs dans votre feed
+            </ThemedText>
           </View>
         )}
 
@@ -1215,7 +1609,7 @@ export default function HomeScreen() {
           console.log('[DELAY REQUESTS DEBUG] Displaying', delayRequests.length, 'delay requests');
 
           return (
-            <View style={[styles.card, { backgroundColor: colors.background }]}>
+            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
                   <View style={[styles.iconContainer, { backgroundColor: '#f59e0b' + '20' }]}>
@@ -1233,7 +1627,7 @@ export default function HomeScreen() {
                       styles.delayRequestItem,
                       index !== delayRequests.length - 1 && [
                         styles.delayRequestItemBorder,
-                        { borderBottomColor: colors.text + '15' },
+                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
                       ],
                     ]}
                   >
@@ -1247,9 +1641,30 @@ export default function HomeScreen() {
                         <ThemedText style={styles.delayRequestOpponent}>
                           {delayItem.opponent.first_name} {delayItem.opponent.last_name}
                         </ThemedText>
-                        <ThemedText style={[styles.delayRequestDate, { color: colors.text, opacity: 0.5 }]}>
-                          {delayItem.match.scheduled_at ? formatDate(new Date(delayItem.match.scheduled_at)) : 'Date non définie'}
-                        </ThemedText>
+                        {delayItem.match.scheduled_at ? (() => {
+                          const date = new Date(delayItem.match.scheduled_at);
+                          const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+                          const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+                          const day = days[date.getDay()];
+                          const month = months[date.getMonth()];
+                          const dayNumber = date.getDate();
+                          const hours = date.getHours().toString().padStart(2, '0');
+                          const minutes = date.getMinutes().toString().padStart(2, '0');
+                          return (
+                            <View style={styles.matchDateContainer}>
+                              <ThemedText style={[styles.delayRequestDate, { color: colors.text }]}>
+                                {day} {dayNumber} {month}
+                              </ThemedText>
+                              <ThemedText style={[styles.delayRequestTime, { color: colors.text, opacity: 0.5 }]}>
+                                {' • '}{hours}:{minutes}
+                              </ThemedText>
+                            </View>
+                          );
+                        })() : (
+                          <ThemedText style={[styles.delayRequestDate, { color: colors.text, opacity: 0.5 }]}>
+                            Date non définie
+                          </ThemedText>
+                        )}
                       </View>
                     </View>
                     <View style={styles.delayRequestActions}>
@@ -1276,6 +1691,7 @@ export default function HomeScreen() {
           }}
         />
       )}
+
       </ThemedView>
   );
 }
@@ -1297,22 +1713,20 @@ const styles = StyleSheet.create({
     minHeight: 400,
   },
   welcomeHeader: {
-    marginBottom: 24,
-    padding: 20,
+    padding: 16,
     borderRadius: 16,
-    marginHorizontal: 20,
-    marginTop: 8,
+  },
+  welcomeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   welcomeTopSection: {
     marginBottom: 16,
   },
-  welcomeTextContainer: {
-    flex: 1,
-  },
   welcomeGreeting: {
     fontSize: 24,
     fontWeight: '700',
-    marginBottom: 4,
   },
   welcomeSubtitle: {
     fontSize: 14,
@@ -1327,6 +1741,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flexWrap: 'wrap',
+    marginTop: 4,
   },
   boxPill: {
     flexDirection: 'row',
@@ -1335,6 +1751,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
+    borderWidth: 1,
   },
   boxPillText: {
     fontSize: 12,
@@ -1352,6 +1769,46 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  nextMatchCompact: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    gap: 8,
+    minWidth: 0,
+  },
+  nextMatchCompactHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  nextMatchCompactTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  nextMatchCompactContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  nextMatchCompactAvatarText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  nextMatchCompactInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  nextMatchCompactName: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  nextMatchCompactDate: {
+    fontSize: 11,
+    fontWeight: '400',
+  },
   header: {
     marginBottom: 16,
   },
@@ -1363,6 +1820,17 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     marginBottom: 20,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  rankingCard: {
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 20,
+    borderWidth: 1,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
     shadowRadius: 8,
@@ -1533,6 +2001,56 @@ const styles = StyleSheet.create({
   delayRequestItemBorder: {
     borderBottomWidth: 1,
   },
+  rankingList: {
+    gap: 0,
+  },
+  rankingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    gap: 8,
+  },
+  rankingHeader: {
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'transparent',
+  },
+  rankingHeaderText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  rankingItemBorder: {
+    borderBottomWidth: 1,
+  },
+  rankingPosition: {
+    minWidth: 28,
+    alignItems: 'flex-start',
+  },
+  rankingPositionText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  rankingPlayerInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  rankingPlayerName: {
+    fontSize: 12,
+    fontWeight: '400',
+  },
+  rankingStats: {
+    minWidth: 80,
+    alignItems: 'flex-end',
+  },
+  rankingStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  rankingStatsText: {
+    fontSize: 10,
+    fontWeight: '500',
+  },
   delayRequestInfo: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1548,6 +2066,18 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   delayRequestDate: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  delayRequestTime: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  matchDateContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  matchTime: {
     fontSize: 13,
     fontWeight: '400',
   },
@@ -1612,10 +2142,22 @@ const styles = StyleSheet.create({
   delayButtonWrapper: {
     marginLeft: 4,
   },
+  scoreTagContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   scoreTag: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
+  },
+  shareButtonSmall: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scoreTagText: {
     fontSize: 13,

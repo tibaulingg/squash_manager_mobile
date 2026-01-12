@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuthModal } from '@/components/auth-modal';
 import { PlayerAvatar } from '@/components/player-avatar';
 import { EditProfileForm } from '@/components/profile/edit-profile-form';
+import { ReactionAnimation } from '@/components/reaction-animation';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -15,11 +16,20 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useImagePicker } from '@/hooks/use-image-picker';
 import { api } from '@/services/api';
-import type { PlayerDTO } from '@/types/api';
+import type { MatchCommentDTO, PlayerDTO } from '@/types/api';
 import { formatMatchScore, getMatchSpecialStatus, isSpecialCaseMatch } from '@/utils/match-helpers';
 
 // Couleur d'avatar sobre
 const AVATAR_COLOR = '#9ca3af';
+
+const REACTIONS = [
+  { emoji: '🔥', name: 'fire' },
+  { emoji: '👏', name: 'clap' },
+  { emoji: '💪', name: 'muscle' },
+  { emoji: '🎉', name: 'party' },
+  { emoji: '😢', name: 'sad' },
+  { emoji: '❤️', name: 'heart' },
+];
 
 const getInitials = (name: string): string => {
   const parts = name.split(' ');
@@ -39,6 +49,23 @@ const formatDate = (date: Date): string => {
   const year = date.getFullYear();
 
   return `${day} ${dayNumber} ${month} ${year}`;
+};
+
+const formatCommentDate = (date: Date): string => {
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+
+  if (minutes < 1) return 'À l\'instant';
+  if (minutes < 60) return `Il y a ${minutes} min`;
+  if (hours < 24) return `Il y a ${hours}h`;
+  if (days < 7) return `Il y a ${days}j`;
+  
+  const daysOfWeek = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+  const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+  return `${daysOfWeek[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]}`;
 };
 
 type SortOption = 'date' | 'score' | 'opponent';
@@ -62,6 +89,12 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
   const [refreshing, setRefreshing] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [currentPlayer, setCurrentPlayer] = useState<PlayerDTO | null>(null);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [isFollowingLoading, setIsFollowingLoading] = useState(false);
+  const [followingPlayers, setFollowingPlayers] = useState<PlayerDTO[]>([]);
+  const [followersPlayers, setFollowersPlayers] = useState<PlayerDTO[]>([]);
+  const [showFollowingModal, setShowFollowingModal] = useState(false);
+  const [followingModalType, setFollowingModalType] = useState<'following' | 'followers'>('following');
   const [stats, setStats] = useState({ wins: 0, losses: 0, winRate: 0 });
   const [advancedStats, setAdvancedStats] = useState({
     currentStreak: { type: 'win' as 'win' | 'loss', count: 0 },
@@ -105,6 +138,15 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [matchReactions, setMatchReactions] = useState<{ [matchId: string]: { [reaction: string]: number } }>({});
+  const [userReactions, setUserReactions] = useState<{ [matchId: string]: string | null }>({});
+  const [matchComments, setMatchComments] = useState<{ [matchId: string]: MatchCommentDTO[] }>({});
+  const [commentTexts, setCommentTexts] = useState<{ [matchId: string]: string }>({});
+  const [postingComment, setPostingComment] = useState<Set<string>>(new Set());
+  const [showReactions, setShowReactions] = useState<Set<string>>(new Set());
+  const [showComments, setShowComments] = useState<Set<string>>(new Set());
+  const [activeAnimations, setActiveAnimations] = useState<{ [matchId: string]: string | null }>({});
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editForm, setEditForm] = useState({
     email: '',
@@ -112,6 +154,67 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     schedulePreference: 'peu_importe' as 'tot' | 'tard' | 'peu_importe',
   });
   const { image: newProfileImage, pickImage, clearImage } = useImagePicker();
+
+  const handleToggleFollow = async () => {
+    if (!user || !currentPlayer || currentPlayer.id === user.id) return;
+    
+    // Trouver le joueur actuel (celui qui est connecté)
+    const players = await api.getPlayers();
+    const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+    if (!currentUserPlayer) {
+      Alert.alert('Erreur', 'Joueur non trouvé');
+      return;
+    }
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setIsFollowingLoading(true);
+    
+    try {
+      if (isFollowing) {
+        await api.unfollowPlayer(currentPlayer.id, currentUserPlayer.id);
+        setIsFollowing(false);
+        // Mettre à jour la liste des joueurs suivis si on est sur notre propre profil
+        if (!isModal) {
+          const following = await api.getFollowing(currentUserPlayer.id);
+          setFollowingPlayers(following);
+        }
+      } else {
+        await api.followPlayer(currentPlayer.id, currentUserPlayer.id);
+        setIsFollowing(true);
+        // Mettre à jour la liste des joueurs suivis si on est sur notre propre profil
+        if (!isModal) {
+          const following = await api.getFollowing(currentUserPlayer.id);
+          setFollowingPlayers(following);
+        }
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      console.error('Erreur follow/unfollow:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Erreur', error.message || 'Impossible de modifier le suivi');
+    } finally {
+      setIsFollowingLoading(false);
+    }
+  };
+
+  const handleUnfollowPlayer = async (playerToUnfollow: PlayerDTO) => {
+    if (!user || !currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    try {
+      await api.unfollowPlayer(playerToUnfollow.id, currentPlayer.id);
+      
+      // Mettre à jour la liste des joueurs suivis
+      setFollowingPlayers(prev => prev.filter(p => p.id !== playerToUnfollow.id));
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      console.error('Erreur unfollow:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Erreur', error.message || 'Impossible de retirer le suivi');
+    }
+  };
 
   const loadData = useCallback(async () => {
     // En mode modal, on charge le joueur spécifié
@@ -158,6 +261,44 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       }
       
       setCurrentPlayer(player);
+      
+      // Si c'est un autre joueur (modal), vérifier le statut de suivi
+      if (isModal && playerId && playerId !== user?.id && user) {
+        try {
+          const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+          if (currentUserPlayer) {
+            const followStatus = await api.getFollowStatus(currentUserPlayer.id, playerId);
+            setIsFollowing(followStatus.isFollowing);
+          }
+        } catch (error) {
+          console.error('Erreur chargement statut follow:', error);
+          setIsFollowing(false);
+        }
+      }
+      
+      // Si c'est le profil de l'utilisateur connecté, charger les joueurs suivis et followers
+      if (!isModal && user && player) {
+        try {
+          const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+          if (currentUserPlayer && player.id === currentUserPlayer.id) {
+            const following = await api.getFollowing(player.id);
+            setFollowingPlayers(following);
+            // TODO: Charger les followers quand l'API sera disponible
+            // const followers = await api.getFollowers(player.id);
+            // setFollowersPlayers(followers);
+          } else {
+            setFollowingPlayers([]);
+            setFollowersPlayers([]);
+          }
+        } catch (error) {
+          console.error('Erreur chargement joueurs suivis:', error);
+          setFollowingPlayers([]);
+          setFollowersPlayers([]);
+        }
+      } else {
+        setFollowingPlayers([]);
+        setFollowersPlayers([]);
+      }
       
       // 2. Récupérer la saison en cours
       const seasons = await api.getSeasons();
@@ -543,6 +684,34 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       console.log(`Historique créé: ${history.length} matchs`);
       
       setRecentMatches(history);
+      
+      // Charger les réactions et commentaires pour tous les matchs
+      if (history.length > 0 && player) {
+        const matchIds = history.map(m => m.matchData.id);
+        try {
+          const reactionsData = await api.getMatchReactions(matchIds, player.id);
+          const reactionsMap: { [matchId: string]: { [reaction: string]: number } } = {};
+          const userReactionsMap: { [matchId: string]: string | null } = {};
+          
+          Object.entries(reactionsData).forEach(([matchId, data]) => {
+            reactionsMap[matchId] = data.reactions || {};
+            userReactionsMap[matchId] = data.userReaction || null;
+          });
+          
+          setMatchReactions(reactionsMap);
+          setUserReactions(userReactionsMap);
+        } catch (error) {
+          console.error('Erreur chargement réactions:', error);
+        }
+        
+        // Charger les commentaires en batch pour avoir les compteurs
+        try {
+          const commentsData = await api.getMatchCommentsBatch(matchIds, player.id);
+          setMatchComments(commentsData);
+        } catch (error) {
+          console.error('Erreur chargement commentaires:', error);
+        }
+      }
     } catch (error) {
       console.error('Erreur chargement profil:', error);
     } finally {
@@ -705,6 +874,134 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     setMatchDetailsModal({ visible: false, title: '', matches: [] });
   };
 
+  const handleReaction = async (matchId: string, reaction: string) => {
+    if (!currentPlayer) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    // Trouver l'emoji correspondant et lancer l'animation seulement si on ajoute une réaction (pas si on la retire)
+    const currentReaction = userReactions[matchId];
+    const newReaction = currentReaction === reaction ? null : reaction;
+    
+    if (newReaction) {
+      const reactionEmoji = REACTIONS.find(r => r.name === newReaction);
+      if (reactionEmoji) {
+        // Lancer l'animation
+        setActiveAnimations(prev => ({ ...prev, [matchId]: reactionEmoji.emoji }));
+        // Retirer l'animation après qu'elle soit terminée
+        setTimeout(() => {
+          setActiveAnimations(prev => {
+            const next = { ...prev };
+            delete next[matchId];
+            return next;
+          });
+        }, 900);
+      }
+    }
+    
+    try {
+      await api.reactToMatch(matchId, currentPlayer.id, newReaction);
+      
+      setUserReactions(prev => ({
+        ...prev,
+        [matchId]: newReaction,
+      }));
+      
+      setMatchReactions(prev => {
+        const current = prev[matchId] || {};
+        const newCounts = { ...current };
+        
+        if (currentReaction && newCounts[currentReaction]) {
+          newCounts[currentReaction] = Math.max(0, newCounts[currentReaction] - 1);
+          if (newCounts[currentReaction] === 0) {
+            delete newCounts[currentReaction];
+          }
+        }
+        
+        if (newReaction) {
+          newCounts[newReaction] = (newCounts[newReaction] || 0) + 1;
+        }
+        
+        return {
+          ...prev,
+          [matchId]: newCounts,
+        };
+      });
+      
+      // Fermer le panneau de réactions
+      setShowReactions(prev => {
+        const next = new Set(prev);
+        next.delete(matchId);
+        return next;
+      });
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      console.error('Erreur réaction:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la réaction');
+    }
+  };
+
+  const handlePostComment = async (matchId: string) => {
+    const text = commentTexts[matchId]?.trim();
+    if (!text || !currentPlayer) return;
+
+    setPostingComment(prev => new Set(prev).add(matchId));
+
+    try {
+      await api.addMatchComment(matchId, currentPlayer.id, text);
+      setCommentTexts(prev => {
+        const next = { ...prev };
+        delete next[matchId];
+        return next;
+      });
+      
+      const comments = await api.getMatchComments(matchId);
+      setMatchComments(prev => ({ ...prev, [matchId]: comments }));
+      
+      // Ne pas fermer le panneau de commentaires pour voir le nouveau commentaire
+    } catch (error) {
+      console.error('Erreur commentaire:', error);
+      Alert.alert('Erreur', 'Impossible d\'ajouter le commentaire');
+    } finally {
+      setPostingComment(prev => {
+        const next = new Set(prev);
+        next.delete(matchId);
+        return next;
+      });
+    }
+  };
+
+  const handleLoadComments = async (matchId: string) => {
+    try {
+      const comments = await api.getMatchComments(matchId);
+      setMatchComments(prev => ({ ...prev, [matchId]: comments }));
+      return comments;
+    } catch (error) {
+      console.error('Erreur chargement commentaires:', error);
+      return matchComments[matchId] || [];
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string, matchId: string) => {
+    if (!currentPlayer) return;
+    
+    try {
+      await api.deleteMatchComment(commentId, currentPlayer.id);
+      
+      // Mettre à jour les commentaires locaux
+      setMatchComments(prev => ({
+        ...prev,
+        [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
+      }));
+    } catch (error: any) {
+      console.error('Erreur suppression commentaire:', error);
+      Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
+    }
+  };
+
+
   // Filtrer et trier les matchs
   const filteredMatches = recentMatches
     .filter((match) => {
@@ -758,7 +1055,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: Math.max(insets.top, 20) + 20 },
+            { paddingTop: Math.max(insets.top, 20) + 8 },
           ]}
           showsVerticalScrollIndicator={false}
         >
@@ -768,13 +1065,13 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
               <IconSymbol name="person.fill" size={48} color="#FFFFFF" />
             </View>
             <ThemedText style={styles.profileName}>Connectez-vous</ThemedText>
-            <ThemedText style={[styles.profileEmail, { color: colors.text + '60' }]}>
+              <ThemedText style={[styles.profilePhone, { color: colors.text + '60' }]}>
               Accédez à votre profil personnalisé
             </ThemedText>
           </View>
 
           {/* Carte d'invitation */}
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderLeft}>
                 <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
@@ -847,7 +1144,9 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: Math.max(insets.top, 20) + 20 },
+            isModal 
+              ? { paddingTop: 20 }
+              : { paddingTop: Math.max(insets.top, 20) + 8 },
           ]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -886,49 +1185,75 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
             firstName={currentPlayer?.first_name || user?.name.split(' ')[0] || 'User'}
             lastName={currentPlayer?.last_name || user?.name.split(' ')[1] || ''}
             pictureUrl={currentPlayer?.picture}
-            size={100}
+            size={isModal ? 70 : 80}
             backgroundColor={AVATAR_COLOR}
           />
           {currentPlayer && (
             <>
+
+
+
+
               <ThemedText style={[styles.profileName, isModal && styles.profileNameModal]}>
                 {currentPlayer.first_name} {currentPlayer.last_name}
               </ThemedText>
-              <ThemedText style={[styles.profileEmail, { color: colors.text, opacity: 0.6 }]}>
-                {currentPlayer.email}
-              </ThemedText>
+              {currentPlayer.phone && (
+                <ThemedText style={[styles.profilePhone, { color: colors.text, opacity: 0.6 }]}>
+                  {currentPlayer.phone}
+                </ThemedText>
+              )}
               
-              {/* Badges en ligne */}
+              {/* Badges et bouton Follow sur une seule ligne */}
               <View style={[styles.badgesContainer, isModal && styles.badgesContainerModal]}>
                 {currentPlayer.current_box && (
-                  <View style={[styles.infoBadge, styles.boxBadge, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR + '40' }]}>
-                    <IconSymbol name="square.grid.2x2.fill" size={14} color={PRIMARY_COLOR} />
+                  <View style={[styles.infoBadge, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR + '40' }]}>
+                    <IconSymbol name="square.grid.2x2.fill" size={12} color={PRIMARY_COLOR} />
                     <ThemedText style={[styles.infoBadgeText, { color: PRIMARY_COLOR }]}>
                       {currentPlayer.current_box.box_name}
                     </ThemedText>
                   </View>
                 )}
                 
-                {currentPlayer.schedule_preference && currentPlayer.schedule_preference !== 'peu_importe' && (
-                  <View style={[styles.infoBadge, styles.preferenceBadge, { backgroundColor: colors.text + '08', borderColor: colors.text + '20' }]}>
-                    <ThemedText style={styles.infoBadgeText}>
-                      {currentPlayer.schedule_preference === 'tot' ? '🌅 Tôt' : '🌙 Tard'}
-                    </ThemedText>
-                  </View>
-                )}
-                
                 {advancedStats.rankingPosition > 0 && (
                   <TouchableOpacity
-                    style={[styles.infoBadge, { backgroundColor: '#fbbf24' + '20', borderColor: '#fbbf24' + '40' }]}
+                    style={[styles.infoBadge, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR + '40' }]}
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       router.push('/(tabs)/ranking');
                     }}
                     activeOpacity={0.7}
                   >
-                    <IconSymbol name="trophy.fill" size={14} color="#fbbf24" />
-                    <ThemedText style={[styles.infoBadgeText, { color: '#fbbf24' }]}>
+                    <IconSymbol name="trophy.fill" size={12} color={PRIMARY_COLOR} />
+                    <ThemedText style={[styles.infoBadgeText, { color: PRIMARY_COLOR }]}>
                       #{advancedStats.rankingPosition}
+                    </ThemedText>
+                  </TouchableOpacity>
+                )}
+                
+                {/* Bouton Follow/Unfollow (seulement en modal et si ce n'est pas le joueur actuel) */}
+                {isModal && user && currentPlayer && currentPlayer.id && user.id && currentPlayer.id !== user.id && (
+                  <TouchableOpacity
+                    style={[
+                      styles.followButton,
+                      {
+                        backgroundColor: isFollowing ? colors.text + '10' : PRIMARY_COLOR,
+                        borderColor: isFollowing ? colors.text + '25' : PRIMARY_COLOR,
+                      },
+                    ]}
+                    onPress={handleToggleFollow}
+                    disabled={isFollowingLoading}
+                    activeOpacity={0.7}
+                  >
+                    <IconSymbol 
+                      name={isFollowing ? "person.badge.minus.fill" : "person.badge.plus.fill"} 
+                      size={13} 
+                      color={isFollowing ? colors.text : '#000'} 
+                    />
+                    <ThemedText style={[
+                      styles.followButtonText,
+                      { color: isFollowing ? colors.text : '#000' }
+                    ]}>
+                      {isFollowing ? 'Ne plus suivre' : 'Suivre'}
                     </ThemedText>
                   </TouchableOpacity>
                 )}
@@ -957,43 +1282,15 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           />
         )}
 
-        {/* Prochain match */}
-        {!isModal && nextMatch && (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <ThemedText style={styles.sectionTitle}>Prochain match</ThemedText>
-            <View style={styles.nextMatchContainer}>
-              <View style={styles.nextMatchInfo}>
-                <View style={styles.nextMatchOpponent}>
-                  <PlayerAvatar
-                    firstName={nextMatch.opponent.first_name}
-                    lastName={nextMatch.opponent.last_name}
-                    pictureUrl={nextMatch.opponent.picture}
-                    size={50}
-                    backgroundColor={AVATAR_COLOR}
-                  />
-                  <View style={styles.nextMatchDetails}>
-                    <ThemedText style={[styles.nextMatchName, { color: colors.text }]}>
-                      {nextMatch.opponent.first_name} {nextMatch.opponent.last_name}
-                    </ThemedText>
-                    <View style={styles.nextMatchDate}>
-                      <IconSymbol name="calendar" size={14} color={colors.text + '60'} />
-                      <ThemedText style={[styles.nextMatchDateText, { color: colors.text, opacity: 0.7 }]}>
-                        {formatDate(new Date(nextMatch.match.scheduled_at!))}
-                      </ThemedText>
-                    </View>
-                  </View>
-                </View>
-              </View>
+        {/* Next Box Status - uniquement pour l'utilisateur actuel */}
+        {!isModal && currentPlayer?.current_box && user && currentPlayer.id === user.id && (
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <View style={styles.sectionTitleContainer}>
+              <IconSymbol name="square.grid.2x2.fill" size={18} color={colors.text + '80'} />
+              <ThemedText style={styles.sectionTitle}>Prochain Box</ThemedText>
             </View>
-          </View>
-        )}
-
-        {/* Next Box Status */}
-        {currentPlayer?.current_box && (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <ThemedText style={styles.sectionTitle}>Prochain Box</ThemedText>
             <ThemedText style={[styles.sectionSubtitle, { color: colors.text, opacity: 0.6 }]}>
-              {isModal ? 'Statut pour le prochain box' : 'Souhaitez-vous continuer dans le prochain box ?'}
+              Souhaitez-vous continuer dans le prochain box ?
             </ThemedText>
             
             <View style={styles.statusButtons}>
@@ -1005,11 +1302,10 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       { backgroundColor: '#10b981' + '20', borderColor: '#10b981' },
                     ],
                     { borderColor: colors.text + '20' },
-                    isModal && styles.statusButtonReadonly,
                   ]}
-                  onPress={isModal ? undefined : () => handleUpdateNextBoxStatus('continue')}
-                  disabled={isModal || updatingStatus}
-                  activeOpacity={isModal ? 1 : 0.7}
+                  onPress={() => handleUpdateNextBoxStatus('continue')}
+                  disabled={updatingStatus}
+                  activeOpacity={0.7}
                 >
                   <IconSymbol 
                     name="checkmark.circle.fill" 
@@ -1063,11 +1359,10 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       { backgroundColor: colors.text + '10', borderColor: colors.text + '30' },
                     ],
                     { borderColor: colors.text + '20' },
-                    isModal && styles.statusButtonReadonly,
                   ]}
-                  onPress={isModal ? undefined : () => handleUpdateNextBoxStatus(null)}
-                  disabled={isModal || updatingStatus}
-                  activeOpacity={isModal ? 1 : 0.7}
+                  onPress={() => handleUpdateNextBoxStatus(null)}
+                  disabled={updatingStatus}
+                  activeOpacity={0.7}
                 >
                   <IconSymbol 
                     name="questionmark.circle.fill" 
@@ -1088,27 +1383,30 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
         )}
 
         {/* Statistiques principales */}
-        <View style={[styles.statsCard, { backgroundColor: colors.background }]}>
-          <ThemedText style={styles.sectionTitle}>Statistiques</ThemedText>
+        <View style={[styles.statsCard, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+          <View style={styles.sectionTitleContainer}>
+            <IconSymbol name="chart.bar.fill" size={18} color={colors.text + '80'} />
+            <ThemedText style={styles.sectionTitle}>Statistiques</ThemedText>
+          </View>
           <View style={styles.statsGrid}>
-            <View style={[styles.statBox, { backgroundColor: colors.text + '05' }]}>
-              <ThemedText style={[styles.statValue, { color: PRIMARY_COLOR }]}>
+            <View style={[styles.statBox, { backgroundColor: '#10b981' + '10', borderColor: '#10b981' + '20' }]}>
+              <ThemedText style={[styles.statValue, { color: '#10b981' }]}>
                 {stats.wins}
               </ThemedText>
               <ThemedText style={[styles.statLabel, { color: colors.text, opacity: 0.6 }]}>
                 Victoires
               </ThemedText>
             </View>
-            <View style={[styles.statBox, { backgroundColor: colors.text + '05' }]}>
-              <ThemedText style={[styles.statValue, { color: colors.text }]}>
+            <View style={[styles.statBox, { backgroundColor: '#ef4444' + '10', borderColor: '#ef4444' + '20' }]}>
+              <ThemedText style={[styles.statValue, { color: '#ef4444' }]}>
                 {stats.losses}
               </ThemedText>
               <ThemedText style={[styles.statLabel, { color: colors.text, opacity: 0.6 }]}>
                 Défaites
               </ThemedText>
             </View>
-            <View style={[styles.statBox, { backgroundColor: colors.text + '05' }]}>
-              <ThemedText style={[styles.statValue, { color: colors.text }]}>
+            <View style={[styles.statBox, { backgroundColor: (stats.winRate >= 50 ? '#10b981' : stats.winRate >= 30 ? '#fbbf24' : '#ef4444') + '10', borderColor: (stats.winRate >= 50 ? '#10b981' : stats.winRate >= 30 ? '#fbbf24' : '#ef4444') + '20' }]}>
+              <ThemedText style={[styles.statValue, { color: stats.winRate >= 50 ? '#10b981' : stats.winRate >= 30 ? '#fbbf24' : '#ef4444' }]}>
                 {stats.winRate}%
               </ThemedText>
               <ThemedText style={[styles.statLabel, { color: colors.text, opacity: 0.6 }]}>
@@ -1118,11 +1416,24 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           </View>
         </View>
 
-        {/* État de forme */}
-        {advancedStats.form.length > 0 && (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <ThemedText style={styles.sectionTitle}>État de forme</ThemedText>
-            <View style={styles.formContainer}>
+        {/* Statistiques avancées */}
+        <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+          <View style={styles.sectionTitleContainer}>
+            <IconSymbol name="chart.bar.fill" size={18} color={colors.text + '80'} />
+            <ThemedText style={styles.sectionTitle}>Statistiques avancées</ThemedText>
+          </View>
+          
+          {/* État de forme - remplace la série actuelle */}
+          {advancedStats.form.length > 0 && (
+            <View style={[styles.formCard, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}>
+              <View style={styles.formHeader}>
+                <ThemedText style={[styles.formTitle, { color: colors.text }]}>
+                  État de forme
+                </ThemedText>
+                <ThemedText style={[styles.formSubtitle, { color: colors.text, opacity: 0.6 }]}>
+                  5 derniers matchs
+                </ThemedText>
+              </View>
               <View style={styles.formPills}>
                 {advancedStats.form.map((result, index) => (
                   <View
@@ -1131,9 +1442,19 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       styles.formPill,
                       {
                         backgroundColor: result === 'win' ? '#10b981' : '#ef4444',
+                        borderWidth: 1.5,
+                        borderColor: result === 'win' ? '#059669' : '#dc2626',
+                        alignItems: 'center',
+                        justifyContent: 'center',
                       },
                     ]}
-                  />
+                  >
+                    <IconSymbol
+                      name={result === 'win' ? 'checkmark' : 'xmark'}
+                      size={6}
+                      color="#FFFFFF"
+                    />
+                  </View>
                 ))}
                 {/* Remplir jusqu'à 5 si moins de matchs */}
                 {Array.from({ length: 5 - advancedStats.form.length }).map((_, index) => (
@@ -1143,39 +1464,12 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       styles.formPill,
                       {
                         backgroundColor: colors.text + '15',
-                        borderWidth: 1,
+                        borderWidth: 1.5,
                         borderColor: colors.text + '30',
                       },
                     ]}
                   />
                 ))}
-              </View>
-              <ThemedText style={[styles.formLabel, { color: colors.text, opacity: 0.6 }]}>
-                5 derniers matchs
-              </ThemedText>
-            </View>
-          </View>
-        )}
-
-        {/* Statistiques avancées */}
-        <View style={[styles.card, { backgroundColor: colors.background }]}>
-          <ThemedText style={styles.sectionTitle}>Statistiques avancées</ThemedText>
-          
-          {/* Série actuelle - ligne complète */}
-          {advancedStats.currentStreak.count > 0 && (
-            <View style={[styles.currentStreakBox, { backgroundColor: colors.text + '05' }]}>
-              <IconSymbol 
-                name={advancedStats.currentStreak.type === 'win' ? 'arrow.up.circle.fill' : 'arrow.down.circle.fill'} 
-                size={24} 
-                color={advancedStats.currentStreak.type === 'win' ? '#10b981' : '#ef4444'} 
-              />
-              <View style={styles.currentStreakContent}>
-                <ThemedText style={[styles.currentStreakValue, { color: colors.text }]}>
-                  {advancedStats.currentStreak.count} {advancedStats.currentStreak.type === 'win' ? 'victoires' : 'défaites'} de suite
-                </ThemedText>
-                <ThemedText style={[styles.currentStreakLabel, { color: colors.text, opacity: 0.6 }]}>
-                  Série actuelle
-                </ThemedText>
               </View>
             </View>
           )}
@@ -1184,7 +1478,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           <View style={styles.streaksRow}>
             {advancedStats.bestStreak.count > 0 && (
               <TouchableOpacity
-                style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                style={[styles.streakCard, { backgroundColor: '#10b981' + '10', borderColor: '#10b981' + '30', flex: 1 }]}
                 onPress={async () => {
                   const players = await api.getPlayers();
                   openMatchDetailsModal(
@@ -1195,19 +1489,21 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                 }}
                 activeOpacity={0.7}
               >
-                <IconSymbol name="flame.fill" size={20} color="#10b981" />
-                <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
+                <View style={[styles.streakIconContainer, { backgroundColor: '#10b981' + '20' }]}>
+                  <IconSymbol name="flame.fill" size={24} color="#10b981" />
+                </View>
+                <ThemedText style={[styles.streakValue, { color: '#10b981' }]}>
                   {advancedStats.bestStreak.count}
                 </ThemedText>
-                <ThemedText style={[styles.advancedStatLabel, { color: colors.text, opacity: 0.6 }]}>
-                  Meilleure série V
+                <ThemedText style={[styles.streakLabel, { color: colors.text, opacity: 0.7 }]}>
+                  Meilleure série
                 </ThemedText>
               </TouchableOpacity>
             )}
             
             {advancedStats.worstStreak.count > 0 && (
               <TouchableOpacity
-                style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                style={[styles.streakCard, { backgroundColor: '#ef4444' + '10', borderColor: '#ef4444' + '30', flex: 1 }]}
                 onPress={async () => {
                   const players = await api.getPlayers();
                   openMatchDetailsModal(
@@ -1218,12 +1514,14 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                 }}
                 activeOpacity={0.7}
               >
-                <IconSymbol name="exclamationmark.triangle.fill" size={20} color="#ef4444" />
-                <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
+                <View style={[styles.streakIconContainer, { backgroundColor: '#ef4444' + '20' }]}>
+                  <IconSymbol name="exclamationmark.triangle.fill" size={24} color="#ef4444" />
+                </View>
+                <ThemedText style={[styles.streakValue, { color: '#ef4444' }]}>
                   {advancedStats.worstStreak.count}
                 </ThemedText>
-                <ThemedText style={[styles.advancedStatLabel, { color: colors.text, opacity: 0.6 }]}>
-                  Pire série D
+                <ThemedText style={[styles.streakLabel, { color: colors.text, opacity: 0.7 }]}>
+                  Pire série
                 </ThemedText>
               </TouchableOpacity>
             )}
@@ -1231,7 +1529,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           
           {advancedStats.totalPoints > 0 && (
             <View style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', marginTop: 12 }]}>
-              <IconSymbol name="trophy.fill" size={20} color="#fbbf24" />
+              <IconSymbol name="trophy.fill" size={20} color={PRIMARY_COLOR} />
               <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
                 {advancedStats.totalPoints}
               </ThemedText>
@@ -1244,14 +1542,17 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
 
         {/* Adversaires */}
         {(advancedStats.rival.name || advancedStats.bestOpponent.name || advancedStats.worstOpponent.name) && (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <ThemedText style={styles.sectionTitle}>Adversaires</ThemedText>
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <View style={styles.sectionTitleContainer}>
+              <IconSymbol name="person.2.fill" size={18} color={colors.text + '80'} />
+              <ThemedText style={styles.sectionTitle}>Adversaires</ThemedText>
+            </View>
             
             {/* Adversaires - tous côte à côte */}
             <View style={styles.opponentsRow}>
               {advancedStats.rival.name && advancedStats.rival.player && (
                 <TouchableOpacity
-                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: PRIMARY_COLOR + '30', flex: 1 }]}
                   onPress={async () => {
                     const players = await api.getPlayers();
                     openMatchDetailsModal(
@@ -1262,8 +1563,8 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.opponentIconContainer}>
-                    <IconSymbol name="person.2.fill" size={20} color={PRIMARY_COLOR} />
+                  <View style={styles.opponentEmojiContainer}>
+                    <ThemedText style={styles.opponentEmoji}>🤝</ThemedText>
                   </View>
                   <ThemedText 
                     style={[styles.opponentTitle, { color: colors.text }]}
@@ -1272,46 +1573,53 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                   >
                     Meilleur ami
                   </ThemedText>
-                <View style={styles.opponentAvatarContainer}>
-                  <PlayerAvatar
-                    firstName={advancedStats.rival.player.first_name}
-                    lastName={advancedStats.rival.player.last_name}
-                    pictureUrl={advancedStats.rival.player.picture}
-                    size={40}
-                    backgroundColor={AVATAR_COLOR}
-                  />
-                </View>
-                <View style={styles.opponentNamesContainer}>
-                  <ThemedText 
-                    style={[styles.opponentFirstName, { color: colors.text }]}
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                  >
-                    {advancedStats.rival.player.first_name}
-                  </ThemedText>
-                  <ThemedText 
-                    style={[styles.opponentLastName, { color: colors.text }]}
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                  >
-                    {advancedStats.rival.player.last_name}
-                  </ThemedText>
-                </View>
-                  <ThemedText style={[styles.opponentStats, { color: colors.text, opacity: 0.6 }]}>
-                    {advancedStats.rival.matches} matchs •{' '}
-                    <ThemedText style={{ color: '#10b981', fontWeight: '600' }}>
-                      {advancedStats.rival.wins}V
+                  <View style={styles.opponentAvatarContainer}>
+                    <PlayerAvatar
+                      firstName={advancedStats.rival.player.first_name}
+                      lastName={advancedStats.rival.player.last_name}
+                      pictureUrl={advancedStats.rival.player.picture}
+                      size={36}
+                      backgroundColor={AVATAR_COLOR}
+                    />
+                  </View>
+                  <View style={styles.opponentNamesContainer}>
+                    <ThemedText 
+                      style={[styles.opponentFirstName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.rival.player.first_name}
                     </ThemedText>
-                    {' '}-{' '}
-                    <ThemedText style={{ color: '#ef4444', fontWeight: '600' }}>
-                      {advancedStats.rival.losses}D
+                    <ThemedText 
+                      style={[styles.opponentLastName, { color: colors.text, opacity: 0.7 }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.rival.player.last_name}
                     </ThemedText>
-                  </ThemedText>
+                  </View>
+                  <View style={styles.opponentStatsContainer}>
+                    <ThemedText style={[styles.opponentStatsLabel, { color: colors.text, opacity: 0.5 }]}>
+                      {advancedStats.rival.matches} matchs
+                    </ThemedText>
+                    <View style={styles.opponentStatsRow}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#10b981' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#10b981' }]}>
+                          {advancedStats.rival.wins}V
+                        </ThemedText>
+                      </View>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#ef4444' }]}>
+                          {advancedStats.rival.losses}D
+                        </ThemedText>
+                      </View>
+                    </View>
+                  </View>
                 </TouchableOpacity>
               )}
               {advancedStats.bestOpponent.name && advancedStats.bestOpponent.player && (
                 <TouchableOpacity
-                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: '#10b981' + '30', flex: 1 }]}
                   onPress={async () => {
                     const players = await api.getPlayers();
                     openMatchDetailsModal(
@@ -1322,22 +1630,22 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.opponentIconContainer}>
-                    <IconSymbol name="star.fill" size={20} color="#10b981" />
+                  <View style={styles.opponentEmojiContainer}>
+                    <ThemedText style={styles.opponentEmoji}>⭐</ThemedText>
                   </View>
                   <ThemedText 
                     style={[styles.opponentTitle, { color: colors.text }]}
                     numberOfLines={2}
                     ellipsizeMode="tail"
                   >
-                    Meilleur adversaire
+                    Victoires faciles
                   </ThemedText>
                   <View style={styles.opponentAvatarContainer}>
                     <PlayerAvatar
                       firstName={advancedStats.bestOpponent.player.first_name}
                       lastName={advancedStats.bestOpponent.player.last_name}
                       pictureUrl={advancedStats.bestOpponent.player.picture}
-                      size={40}
+                      size={36}
                       backgroundColor={AVATAR_COLOR}
                     />
                   </View>
@@ -1350,29 +1658,36 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       {advancedStats.bestOpponent.player.first_name}
                     </ThemedText>
                     <ThemedText 
-                      style={[styles.opponentLastName, { color: colors.text }]}
+                      style={[styles.opponentLastName, { color: colors.text, opacity: 0.7 }]}
                       numberOfLines={1}
                       ellipsizeMode="tail"
                     >
                       {advancedStats.bestOpponent.player.last_name}
                     </ThemedText>
                   </View>
-                  <ThemedText style={[styles.opponentStats, { color: colors.text, opacity: 0.6 }]}>
-                    {advancedStats.bestOpponent.matches} matchs •{' '}
-                    <ThemedText style={{ color: '#10b981', fontWeight: '600' }}>
-                      {advancedStats.bestOpponent.wins}V
+                  <View style={styles.opponentStatsContainer}>
+                    <ThemedText style={[styles.opponentStatsLabel, { color: colors.text, opacity: 0.5 }]}>
+                      {advancedStats.bestOpponent.matches} matchs
                     </ThemedText>
-                    {' '}-{' '}
-                    <ThemedText style={{ color: '#ef4444', fontWeight: '600' }}>
-                      {advancedStats.bestOpponent.losses}D
-                    </ThemedText>
-                  </ThemedText>
+                    <View style={styles.opponentStatsRow}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#10b981' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#10b981' }]}>
+                          {advancedStats.bestOpponent.wins}V
+                        </ThemedText>
+                      </View>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#ef4444' }]}>
+                          {advancedStats.bestOpponent.losses}D
+                        </ThemedText>
+                      </View>
+                    </View>
+                  </View>
                 </TouchableOpacity>
               )}
               
               {advancedStats.worstOpponent.name && advancedStats.worstOpponent.name !== advancedStats.bestOpponent.name && advancedStats.worstOpponent.player && (
                 <TouchableOpacity
-                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', flex: 1 }]}
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: '#ef4444' + '30', flex: 1 }]}
                   onPress={async () => {
                     const players = await api.getPlayers();
                     openMatchDetailsModal(
@@ -1383,8 +1698,8 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.opponentIconContainer}>
-                    <IconSymbol name="exclamationmark.triangle.fill" size={20} color="#ef4444" />
+                  <View style={styles.opponentEmojiContainer}>
+                    <ThemedText style={styles.opponentEmoji}>😈</ThemedText>
                   </View>
                   <ThemedText 
                     style={[styles.opponentTitle, { color: colors.text }]}
@@ -1398,7 +1713,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       firstName={advancedStats.worstOpponent.player.first_name}
                       lastName={advancedStats.worstOpponent.player.last_name}
                       pictureUrl={advancedStats.worstOpponent.player.picture}
-                      size={40}
+                      size={36}
                       backgroundColor={AVATAR_COLOR}
                     />
                   </View>
@@ -1411,23 +1726,30 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       {advancedStats.worstOpponent.player.first_name}
                     </ThemedText>
                     <ThemedText 
-                      style={[styles.opponentLastName, { color: colors.text }]}
+                      style={[styles.opponentLastName, { color: colors.text, opacity: 0.7 }]}
                       numberOfLines={1}
                       ellipsizeMode="tail"
                     >
                       {advancedStats.worstOpponent.player.last_name}
                     </ThemedText>
                   </View>
-                  <ThemedText style={[styles.opponentStats, { color: colors.text, opacity: 0.6 }]}>
-                    {advancedStats.worstOpponent.matches} matchs •{' '}
-                    <ThemedText style={{ color: '#10b981', fontWeight: '600' }}>
-                      {advancedStats.worstOpponent.wins}V
+                  <View style={styles.opponentStatsContainer}>
+                    <ThemedText style={[styles.opponentStatsLabel, { color: colors.text, opacity: 0.5 }]}>
+                      {advancedStats.worstOpponent.matches} matchs
                     </ThemedText>
-                    {' '}-{' '}
-                    <ThemedText style={{ color: '#ef4444', fontWeight: '600' }}>
-                      {advancedStats.worstOpponent.losses}D
-                    </ThemedText>
-                  </ThemedText>
+                    <View style={styles.opponentStatsRow}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#10b981' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#10b981' }]}>
+                          {advancedStats.worstOpponent.wins}V
+                        </ThemedText>
+                      </View>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#ef4444' }]}>
+                          {advancedStats.worstOpponent.losses}D
+                        </ThemedText>
+                      </View>
+                    </View>
+                  </View>
                 </TouchableOpacity>
               )}
             </View>
@@ -1436,312 +1758,723 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
 
         {/* Historique des matchs */}
         {recentMatches.length > 0 && (
-          <View style={[styles.card, { backgroundColor: colors.background }]}>
-            <ThemedText style={styles.sectionTitle}>
-              Historique ({filteredMatches.length} {filteredMatches.length > 1 ? 'matchs' : 'match'})
-            </ThemedText>
-            
-            {/* Barre de recherche */}
-            <View style={[styles.searchBar, { backgroundColor: colors.text + '05', borderColor: colors.text + '10' }]}>
-              <IconSymbol name="magnifyingglass" size={18} color={colors.text + '60'} />
-              <TextInput
-                style={[styles.searchInput, { color: colors.text }]}
-                placeholder="Rechercher un adversaire..."
-                placeholderTextColor={colors.text + '60'}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <TouchableOpacity
+              style={[styles.historyHeader, { marginBottom: isHistoryExpanded ? 16 : 0 }]}
+              onPress={() => {
+                setIsHistoryExpanded(!isHistoryExpanded);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.historyHeaderLeft}>
+                <IconSymbol name="clock.fill" size={18} color={colors.text + '80'} />
+                <ThemedText style={styles.sectionTitle}>
+                  Historique ({filteredMatches.length} {filteredMatches.length > 1 ? 'matchs' : 'match'})
+                </ThemedText>
+              </View>
+              <IconSymbol 
+                name="chevron.right" 
+                size={16} 
+                color={colors.text + '60'} 
+                style={[
+                  styles.expandIcon,
+                  isHistoryExpanded && styles.expandIconExpanded
+                ]}
               />
-              {searchQuery.length > 0 && (
-                <TouchableOpacity onPress={() => setSearchQuery('')}>
-                  <IconSymbol name="xmark.circle.fill" size={18} color={colors.text + '60'} />
-                </TouchableOpacity>
-              )}
-            </View>
-
-            {/* Filtres et tri */}
-            <View style={styles.filtersContainer}>
-              {/* Filtre par résultat - Segmented Control */}
-              <View style={styles.filterSection}>
-                <ThemedText style={[styles.filterSectionTitle, { color: colors.text, opacity: 0.7 }]}>
-                  Résultat
-                </ThemedText>
-                <View style={[styles.segmentedControl, { backgroundColor: colors.text + '08' }]}>
-                  <TouchableOpacity
-                    style={[
-                      styles.segmentButton,
-                      filterBy === 'all' && [styles.segmentButtonActive, { backgroundColor: colors.text + '15' }],
-                    ]}
-                    onPress={() => {
-                      setFilterBy('all');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }}
-                  >
-                    <ThemedText 
-                      style={[
-                        styles.segmentButtonText, 
-                        { color: filterBy === 'all' ? colors.text : colors.text + '60' },
-                        filterBy === 'all' && { fontWeight: '600' }
-                      ]}
-                    >
-                      Tous
-                    </ThemedText>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.segmentButton,
-                      filterBy === 'won' && [styles.segmentButtonActive, { backgroundColor: '#10b981' + '20' }],
-                    ]}
-                    onPress={() => {
-                      setFilterBy('won');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }}
-                  >
-                    <IconSymbol 
-                      name="checkmark.circle.fill" 
-                      size={16} 
-                      color={filterBy === 'won' ? '#10b981' : colors.text + '60'} 
-                    />
-                    <ThemedText 
-                      style={[
-                        styles.segmentButtonText, 
-                        { color: filterBy === 'won' ? '#10b981' : colors.text + '60' },
-                        filterBy === 'won' && { fontWeight: '600' }
-                      ]}
-                    >
-                      Victoires
-                    </ThemedText>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.segmentButton,
-                      filterBy === 'lost' && [styles.segmentButtonActive, { backgroundColor: '#ef4444' + '20' }],
-                    ]}
-                    onPress={() => {
-                      setFilterBy('lost');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }}
-                  >
-                    <IconSymbol 
-                      name="xmark.circle.fill" 
-                      size={16} 
-                      color={filterBy === 'lost' ? '#ef4444' : colors.text + '60'} 
-                    />
-                    <ThemedText 
-                      style={[
-                        styles.segmentButtonText, 
-                        { color: filterBy === 'lost' ? '#ef4444' : colors.text + '60' },
-                        filterBy === 'lost' && { fontWeight: '600' }
-                      ]}
-                    >
-                      Défaites
-                    </ThemedText>
-                  </TouchableOpacity>
+            </TouchableOpacity>
+            
+            {isHistoryExpanded && (
+              <>
+                {/* Barre de recherche */}
+                <View style={[styles.searchBar, { backgroundColor: colors.text + '05', borderColor: colors.text + '10' }]}>
+                  <IconSymbol name="magnifyingglass" size={18} color={colors.text + '60'} />
+                  <TextInput
+                    style={[styles.searchInput, { color: colors.text }]}
+                    placeholder="Rechercher un adversaire..."
+                    placeholderTextColor={colors.text + '60'}
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                  />
+                  {searchQuery.length > 0 && (
+                    <TouchableOpacity onPress={() => setSearchQuery('')}>
+                      <IconSymbol name="xmark.circle.fill" size={18} color={colors.text + '60'} />
+                    </TouchableOpacity>
+                  )}
                 </View>
-              </View>
 
-              {/* Tri - Boutons horizontaux */}
-              <View style={styles.filterSection}>
-                <ThemedText style={[styles.filterSectionTitle, { color: colors.text, opacity: 0.7 }]}>
-                  Trier par
-                </ThemedText>
-                <View style={styles.sortButtons}>
-                  <TouchableOpacity
-                    style={[
-                      styles.sortButton,
-                      sortBy === 'date' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
-                      { borderColor: colors.text + '20' },
-                    ]}
-                    onPress={() => {
-                      if (sortBy === 'date') {
-                        setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setSortBy('date');
-                        setSortDirection('desc');
-                      }
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }}
-                  >
-                    <IconSymbol 
-                      name="calendar" 
-                      size={16} 
-                      color={sortBy === 'date' ? PRIMARY_COLOR : colors.text + '60'} 
-                    />
-                    <ThemedText 
-                      style={[
-                        styles.sortButtonText, 
-                        { color: sortBy === 'date' ? PRIMARY_COLOR : colors.text + '60' },
-                        sortBy === 'date' && { fontWeight: '600' }
-                      ]}
-                    >
-                      Date
+                {/* Filtres et tri */}
+                <View style={styles.filtersContainer}>
+                  {/* Filtre par résultat - Segmented Control */}
+                  <View style={styles.filterSection}>
+                    <ThemedText style={[styles.filterSectionTitle, { color: colors.text, opacity: 0.7 }]}>
+                      Résultat
                     </ThemedText>
-                    {sortBy === 'date' && (
-                      <IconSymbol 
-                        name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
-                        size={12} 
-                        color={PRIMARY_COLOR} 
-                      />
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.sortButton,
-                      sortBy === 'opponent' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
-                      { borderColor: colors.text + '20' },
-                    ]}
-                    onPress={() => {
-                      if (sortBy === 'opponent') {
-                        setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setSortBy('opponent');
-                        setSortDirection('desc');
-                      }
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }}
-                  >
-                    <IconSymbol 
-                      name="person.fill" 
-                      size={16} 
-                      color={sortBy === 'opponent' ? PRIMARY_COLOR : colors.text + '60'} 
-                    />
-                    <ThemedText 
-                      style={[
-                        styles.sortButtonText, 
-                        { color: sortBy === 'opponent' ? PRIMARY_COLOR : colors.text + '60' },
-                        sortBy === 'opponent' && { fontWeight: '600' }
-                      ]}
-                    >
-                      Adversaire
-                    </ThemedText>
-                    {sortBy === 'opponent' && (
-                      <IconSymbol 
-                        name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
-                        size={12} 
-                        color={PRIMARY_COLOR} 
-                      />
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.sortButton,
-                      sortBy === 'score' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
-                      { borderColor: colors.text + '20' },
-                    ]}
-                    onPress={() => {
-                      if (sortBy === 'score') {
-                        setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setSortBy('score');
-                        setSortDirection('desc');
-                      }
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }}
-                  >
-                    <IconSymbol 
-                      name="chart.bar.fill" 
-                      size={16} 
-                      color={sortBy === 'score' ? PRIMARY_COLOR : colors.text + '60'} 
-                    />
-                    <ThemedText 
-                      style={[
-                        styles.sortButtonText, 
-                        { color: sortBy === 'score' ? PRIMARY_COLOR : colors.text + '60' },
-                        sortBy === 'score' && { fontWeight: '600' }
-                      ]}
-                    >
-                      Score
-                    </ThemedText>
-                    {sortBy === 'score' && (
-                      <IconSymbol 
-                        name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
-                        size={12} 
-                        color={PRIMARY_COLOR} 
-                      />
-                    )}
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-
-            {/* Liste des matchs */}
-            <View style={styles.matchHistoryList}>
-              {filteredMatches.map((match, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.matchHistoryItem,
-                    index !== filteredMatches.length - 1 && [
-                      styles.matchHistoryBorder,
-                      { borderBottomColor: colors.text + '15' },
-                    ],
-                  ]}
-                >
-                  <View style={styles.matchHistoryLeft}>
-                    <ThemedText style={styles.matchHistoryOpponent}>
-                      {match.opponent}
-                    </ThemedText>
-                    <ThemedText style={[styles.matchHistoryDate, { color: colors.text, opacity: 0.5 }]}>
-                      {formatDate(match.date)}
-                    </ThemedText>
+                    <View style={[styles.segmentedControl, { backgroundColor: colors.text + '08' }]}>
+                      <TouchableOpacity
+                        style={[
+                          styles.segmentButton,
+                          filterBy === 'all' && [styles.segmentButtonActive, { backgroundColor: colors.text + '15' }],
+                        ]}
+                        onPress={() => {
+                          setFilterBy('all');
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                      >
+                        <ThemedText 
+                          style={[
+                            styles.segmentButtonText, 
+                            { color: filterBy === 'all' ? colors.text : colors.text + '60' },
+                            filterBy === 'all' && { fontWeight: '600' }
+                          ]}
+                        >
+                          Tous
+                        </ThemedText>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.segmentButton,
+                          filterBy === 'won' && [styles.segmentButtonActive, { backgroundColor: '#10b981' + '20' }],
+                        ]}
+                        onPress={() => {
+                          setFilterBy('won');
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                      >
+                        <IconSymbol 
+                          name="checkmark.circle.fill" 
+                          size={16} 
+                          color={filterBy === 'won' ? '#10b981' : colors.text + '60'} 
+                        />
+                        <ThemedText 
+                          style={[
+                            styles.segmentButtonText, 
+                            { color: filterBy === 'won' ? '#10b981' : colors.text + '60' },
+                            filterBy === 'won' && { fontWeight: '600' }
+                          ]}
+                        >
+                          Victoires
+                        </ThemedText>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.segmentButton,
+                          filterBy === 'lost' && [styles.segmentButtonActive, { backgroundColor: '#ef4444' + '20' }],
+                        ]}
+                        onPress={() => {
+                          setFilterBy('lost');
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                      >
+                        <IconSymbol 
+                          name="xmark.circle.fill" 
+                          size={16} 
+                          color={filterBy === 'lost' ? '#ef4444' : colors.text + '60'} 
+                        />
+                        <ThemedText 
+                          style={[
+                            styles.segmentButtonText, 
+                            { color: filterBy === 'lost' ? '#ef4444' : colors.text + '60' },
+                            filterBy === 'lost' && { fontWeight: '600' }
+                          ]}
+                        >
+                          Défaites
+                        </ThemedText>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                  <View
-                    style={[
-                      styles.matchHistoryScore,
-                      { 
-                        backgroundColor: (() => {
-                          if (!currentPlayer) return colors.text + '10';
-                          const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
-                          return specialStatus.backgroundColor;
-                        })()
-                      },
-                    ]}
-                  >
-                    <ThemedText
-                      style={[
-                        styles.matchHistoryScoreText,
-                        { 
-                          color: (() => {
-                            if (!currentPlayer) return colors.text;
-                            const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
-                            return specialStatus.textColor;
-                          })()
-                        },
-                      ]}
-                    >
-                      {(() => {
-                        if (!currentPlayer) return match.score;
-                        const [playerScore, opponentScore] = match.score.split('-').map(Number);
-                        return formatMatchScore(match.matchData, currentPlayer.id, playerScore, opponentScore);
-                      })()}
+
+                  {/* Tri - Boutons horizontaux */}
+                  <View style={styles.filterSection}>
+                    <ThemedText style={[styles.filterSectionTitle, { color: colors.text, opacity: 0.7 }]}>
+                      Trier par
                     </ThemedText>
+                    <View style={styles.sortButtons}>
+                      <TouchableOpacity
+                        style={[
+                          styles.sortButton,
+                          sortBy === 'date' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
+                          { borderColor: colors.text + '20' },
+                        ]}
+                        onPress={() => {
+                          if (sortBy === 'date') {
+                            setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
+                          } else {
+                            setSortBy('date');
+                            setSortDirection('desc');
+                          }
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                      >
+                        <IconSymbol 
+                          name="calendar" 
+                          size={16} 
+                          color={sortBy === 'date' ? PRIMARY_COLOR : colors.text + '60'} 
+                        />
+                        <ThemedText 
+                          style={[
+                            styles.sortButtonText, 
+                            { color: sortBy === 'date' ? PRIMARY_COLOR : colors.text + '60' },
+                            sortBy === 'date' && { fontWeight: '600' }
+                          ]}
+                        >
+                          Date
+                        </ThemedText>
+                        {sortBy === 'date' && (
+                          <IconSymbol 
+                            name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
+                            size={12} 
+                            color={PRIMARY_COLOR} 
+                          />
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.sortButton,
+                          sortBy === 'opponent' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
+                          { borderColor: colors.text + '20' },
+                        ]}
+                        onPress={() => {
+                          if (sortBy === 'opponent') {
+                            setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
+                          } else {
+                            setSortBy('opponent');
+                            setSortDirection('desc');
+                          }
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                      >
+                        <IconSymbol 
+                          name="person.fill" 
+                          size={16} 
+                          color={sortBy === 'opponent' ? PRIMARY_COLOR : colors.text + '60'} 
+                        />
+                        <ThemedText 
+                          style={[
+                            styles.sortButtonText, 
+                            { color: sortBy === 'opponent' ? PRIMARY_COLOR : colors.text + '60' },
+                            sortBy === 'opponent' && { fontWeight: '600' }
+                          ]}
+                        >
+                          Adversaire
+                        </ThemedText>
+                        {sortBy === 'opponent' && (
+                          <IconSymbol 
+                            name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
+                            size={12} 
+                            color={PRIMARY_COLOR} 
+                          />
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.sortButton,
+                          sortBy === 'score' && [styles.sortButtonActive, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR }],
+                          { borderColor: colors.text + '20' },
+                        ]}
+                        onPress={() => {
+                          if (sortBy === 'score') {
+                            setSortDirection(sortDirection === 'desc' ? 'asc' : 'desc');
+                          } else {
+                            setSortBy('score');
+                            setSortDirection('desc');
+                          }
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                      >
+                        <IconSymbol 
+                          name="chart.bar.fill" 
+                          size={16} 
+                          color={sortBy === 'score' ? PRIMARY_COLOR : colors.text + '60'} 
+                        />
+                        <ThemedText 
+                          style={[
+                            styles.sortButtonText, 
+                            { color: sortBy === 'score' ? PRIMARY_COLOR : colors.text + '60' },
+                            sortBy === 'score' && { fontWeight: '600' }
+                          ]}
+                        >
+                          Score
+                        </ThemedText>
+                        {sortBy === 'score' && (
+                          <IconSymbol 
+                            name={sortDirection === 'desc' ? 'arrow.down' : 'arrow.up'} 
+                            size={12} 
+                            color={PRIMARY_COLOR} 
+                          />
+                        )}
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
-              ))}
+
+                {/* Liste des matchs */}
+                <View style={styles.matchHistoryList}>
+                  {filteredMatches.map((match, index) => {
+                    const matchId = match.matchData.id;
+                    const matchReactionsData = matchReactions[matchId] || {};
+                    const userReaction = userReactions[matchId];
+                    const totalReactions = Object.values(matchReactionsData).reduce((sum, count) => sum + count, 0);
+                    const comments = matchComments[matchId] || [];
+                    const commentsCount = comments.length;
+
+                    return (
+                      <View
+                        key={index}
+                        style={[
+                          styles.matchHistoryItem,
+                          { backgroundColor: index % 2 === 0 ? 'transparent' : colors.text + '03' },
+                          index !== filteredMatches.length - 1 && [
+                            styles.matchHistoryBorder,
+                            { borderBottomColor: colors.text + '25' },
+                          ],
+                        ]}
+                      >
+                        {/* Animation de réaction */}
+                        {activeAnimations[matchId] && (
+                          <View style={styles.animationContainer}>
+                            <ReactionAnimation
+                              emoji={activeAnimations[matchId]!}
+                              onComplete={() => {
+                                setActiveAnimations(prev => {
+                                  const next = { ...prev };
+                                  delete next[matchId];
+                                  return next;
+                                });
+                              }}
+                            />
+                          </View>
+                        )}
+                        <View style={styles.matchHistoryContent}>
+                          <View style={styles.matchHistoryLeft}>
+                            <ThemedText style={styles.matchHistoryOpponent}>
+                              {match.opponent}
+                            </ThemedText>
+                            <ThemedText style={[styles.matchHistoryDate, { color: colors.text, opacity: 0.5 }]}>
+                              {formatDate(match.date)}
+                            </ThemedText>
+                          </View>
+                          <View
+                            style={[
+                              styles.matchHistoryScore,
+                              { 
+                                backgroundColor: (() => {
+                                  if (!currentPlayer) return colors.text + '10';
+                                  const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
+                                  return specialStatus.backgroundColor;
+                                })()
+                              },
+                            ]}
+                          >
+                            <ThemedText
+                              style={[
+                                styles.matchHistoryScoreText,
+                                { 
+                                  color: (() => {
+                                    if (!currentPlayer) return colors.text;
+                                    const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
+                                    return specialStatus.textColor;
+                                  })()
+                                },
+                              ]}
+                            >
+                              {(() => {
+                                if (!currentPlayer) return match.score;
+                                const [playerScore, opponentScore] = match.score.split('-').map(Number);
+                                return formatMatchScore(match.matchData, currentPlayer.id, playerScore, opponentScore);
+                              })()}
+                            </ThemedText>
+                          </View>
+                        </View>
+
+                        {/* Footer avec boutons d'action à gauche et réactions à droite */}
+                        {currentPlayer && (
+                          <View style={[styles.matchHistoryFooter, { borderTopColor: colors.text + '15' }]}>
+                            <View style={styles.actionsContainer}>
+                              {/* Bouton pour ouvrir le panneau de réactions */}
+                              <TouchableOpacity
+                                style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
+                                onPress={() => {
+                                  setShowReactions(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(matchId)) {
+                                      next.delete(matchId);
+                                    } else {
+                                      next.add(matchId);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                activeOpacity={0.7}
+                              >
+                                <IconSymbol name="face.smiling" size={14} color={colors.text + '80'} />
+                              </TouchableOpacity>
+
+                              {/* Bouton commenter */}
+                              <TouchableOpacity
+                                style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
+                                onPress={() => {
+                                  setShowComments(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(matchId)) {
+                                      next.delete(matchId);
+                                    } else {
+                                      next.add(matchId);
+                                      if (!matchComments[matchId]) {
+                                        handleLoadComments(matchId);
+                                      }
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                activeOpacity={0.7}
+                              >
+                                <IconSymbol name="bubble.left" size={13} color={colors.text + '80'} />
+                                {commentsCount > 0 && (
+                                  <ThemedText style={[styles.toggleButtonText, { color: colors.text + '80' }]}>
+                                    {commentsCount}
+                                  </ThemedText>
+                                )}
+                              </TouchableOpacity>
+                            </View>
+
+                            {/* Résumé des réactions - toujours affiché à droite */}
+                            {totalReactions > 0 && (
+                              <View style={styles.reactionsSummary}>
+                                {REACTIONS.map((reaction) => {
+                                  const count = matchReactionsData[reaction.name] || 0;
+                                  if (count === 0) return null;
+                                  return (
+                                    <View key={reaction.name} style={[styles.reactionBadge, { backgroundColor: colors.text + '08' }]}>
+                                      <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
+                                      <ThemedText style={[styles.reactionCount, { color: colors.text, opacity: 0.7 }]}>
+                                        {count}
+                                      </ThemedText>
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            )}
+                          </View>
+                        )}
+
+                        {/* Section réactions - panneau avec tous les boutons, affiché si toggle activé */}
+                        {currentPlayer && showReactions.has(matchId) && (
+                          <View style={[styles.reactionsSection, { borderTopColor: colors.text + '15' }]}>
+                            <View style={styles.reactionsContainer}>
+                              {REACTIONS.map((reaction) => {
+                                const isActive = userReaction === reaction.name;
+                                return (
+                                  <TouchableOpacity
+                                    key={reaction.name}
+                                    style={[
+                                      styles.reactionButton,
+                                      isActive && [
+                                        styles.reactionButtonActive,
+                                        { backgroundColor: colors.text + '15' },
+                                      ],
+                                      { borderColor: colors.text + '20' },
+                                    ]}
+                                    onPress={() => handleReaction(matchId, reaction.name)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <ThemedText style={styles.reactionEmojiButton}>{reaction.emoji}</ThemedText>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        )}
+
+                        {/* Section commentaires - affichée si toggle activé */}
+                        {currentPlayer && showComments.has(matchId) && (
+                          <View style={[styles.commentsSection, { borderTopColor: colors.text + '15' }]}>
+                            {/* Liste des commentaires */}
+                            {comments.length > 0 && (
+                              <View style={styles.commentsList}>
+                                {comments.map((comment) => {
+                                  // Vérifier si le commentaire appartient à l'utilisateur actuel
+                                  const isOwnComment = currentPlayer && (
+                                    comment.player_id === currentPlayer.id || 
+                                    comment.player?.id === currentPlayer.id
+                                  );
+                                  return (
+                                    <View key={comment.id} style={styles.commentItem}>
+                                      <View style={styles.avatarContainer}>
+                                        <PlayerAvatar
+                                          firstName={comment.player.first_name}
+                                          lastName={comment.player.last_name}
+                                          pictureUrl={comment.player.picture}
+                                          size={28}
+                                        />
+                                      </View>
+                                      <View style={styles.commentContent}>
+                                        <View style={[styles.commentBubble, { backgroundColor: colors.text + '08' }]}>
+                                          <ThemedText style={[styles.commentAuthor, { color: colors.text }]}>
+                                            {comment.player.first_name} {comment.player.last_name}
+                                          </ThemedText>
+                                          <ThemedText style={[styles.commentText, { color: colors.text }]}>
+                                            {comment.text}
+                                          </ThemedText>
+                                        </View>
+                                        {comment.created_at && (
+                                          <ThemedText style={[styles.commentDate, { color: colors.text, opacity: 0.5 }]}>
+                                            {formatCommentDate(new Date(comment.created_at))}
+                                          </ThemedText>
+                                        )}
+                                      </View>
+                                      {isOwnComment ? (
+                                        <TouchableOpacity
+                                          style={styles.commentDeleteButton}
+                                          onPress={() => handleDeleteComment(comment.id, matchId)}
+                                          activeOpacity={0.7}
+                                        >
+                                          <IconSymbol name="trash" size={16} color={colors.text + '80'} />
+                                        </TouchableOpacity>
+                                      ) : null}
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            )}
+
+                            {/* Champ de saisie de commentaire */}
+                            <View style={styles.commentInputContainer}>
+                              <TextInput
+                                style={[
+                                  styles.commentInput,
+                                  {
+                                    backgroundColor: colors.text + '08',
+                                    color: colors.text,
+                                    borderColor: colors.text + '20',
+                                  },
+                                ]}
+                                placeholder="Ajouter un commentaire..."
+                                placeholderTextColor={colors.text + '60'}
+                                value={commentTexts[matchId] || ''}
+                                onChangeText={(text) =>
+                                  setCommentTexts(prev => ({ ...prev, [matchId]: text }))
+                                }
+                                multiline
+                                maxLength={500}
+                                textAlignVertical="top"
+                              />
+                              <TouchableOpacity
+                                style={[
+                                  styles.commentSendButton,
+                                  {
+                                    backgroundColor: PRIMARY_COLOR,
+                                    opacity: (commentTexts[matchId]?.trim() && !postingComment.has(matchId)) ? 1 : 0.5,
+                                  },
+                                ]}
+                                onPress={() => handlePostComment(matchId)}
+                                disabled={!commentTexts[matchId]?.trim() || postingComment.has(matchId)}
+                                activeOpacity={0.7}
+                              >
+                                <IconSymbol name="paperplane.fill" size={16} color="#fff" />
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+          </View>
+        )}
+
+        {/* Suivis - uniquement dans le profil de l'utilisateur connecté */}
+        {!isModal && currentPlayer && user && currentPlayer.id === user.id && (
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <View style={styles.sectionTitleContainer}>
+              <IconSymbol name="square.and.arrow.up" size={18} color={colors.text + '80'} />
+              <ThemedText style={styles.sectionTitle}>Joueurs suivis</ThemedText>
+            </View>
+            <View style={styles.followingSectionButtons}>
+              <TouchableOpacity
+                style={[styles.followingSectionButton, { backgroundColor: colors.text + '05', borderColor: colors.text + '20' }]}
+                onPress={() => {
+                  setFollowingModalType('following');
+                  setShowFollowingModal(true);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.followingSectionButtonText, { color: colors.text }]}>
+                  Suivi ({followingPlayers.length})
+                </ThemedText>
+                <IconSymbol name="chevron.right" size={14} color={colors.text + '60'} />
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.followingSectionButton, { backgroundColor: colors.text + '05', borderColor: colors.text + '20' }]}
+                onPress={() => {
+                  setFollowingModalType('followers');
+                  setShowFollowingModal(true);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.followingSectionButtonText, { color: colors.text }]}>
+                  Suivi par ({followersPlayers.length})
+                </ThemedText>
+                <IconSymbol name="chevron.right" size={14} color={colors.text + '60'} />
+              </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* Paramètres */}
-        <View style={[styles.card, { backgroundColor: colors.background }]}>
-          <ThemedText style={styles.sectionTitle}>Paramètres</ThemedText>
+        {/* Se déconnecter */}
+        <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
           <TouchableOpacity
-            style={styles.settingItem}
+            style={[styles.logoutButton, { backgroundColor: '#ef4444' + '15' }]}
             onPress={handleLogout}
             activeOpacity={0.7}
           >
-            <View style={styles.settingLeft}>
-              <IconSymbol name="arrow.right.square.fill" size={20} color={colors.text + '60'} />
-              <ThemedText style={[styles.settingLabel, { color: colors.text }]}>
+            <View style={styles.logoutButtonLeft}>
+              <IconSymbol name="arrow.right.square.fill" size={20} color="#ef4444" />
+              <ThemedText style={[styles.logoutButtonText, { color: '#ef4444' }]}>
                 Se déconnecter
               </ThemedText>
             </View>
-            <IconSymbol name="chevron.right" size={16} color={colors.text + '40'} />
+            <IconSymbol name="chevron.right" size={16} color="#ef4444" />
           </TouchableOpacity>
         </View>
 
         <View style={{ height: 40 }} />
         </ScrollView>
       )}
+
+      {/* Modal de suivis */}
+      <Modal
+        visible={showFollowingModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowFollowingModal(false)}
+      >
+        <ThemedView style={styles.modalContainer}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.text + '15' }]}>
+            <View style={styles.modalHeaderTitleContainer}>
+              <IconSymbol 
+                name="person.2.fill" 
+                size={20} 
+                color={colors.text + '80'} 
+              />
+              <ThemedText style={[styles.modalTitle, { color: colors.text }]}>
+                {followingModalType === 'following' ? 'Joueurs suivis' : 'Suivi par'}
+              </ThemedText>
+            </View>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowFollowingModal(false)}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="xmark" size={20} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+          
+          <ScrollView style={styles.modalContent}>
+            <View style={styles.modalContentContainer}>
+              {followingModalType === 'following' ? (
+                followingPlayers.length > 0 ? (
+                  <View style={styles.followingList}>
+                    {followingPlayers.map((player) => (
+                      <View key={player.id} style={[styles.followingItem, { borderBottomColor: colors.text + '30', borderBottomWidth: 1 }]}>
+                        <TouchableOpacity
+                          style={styles.followingPlayerInfo}
+                          onPress={() => {
+                            setShowFollowingModal(false);
+                            router.push({
+                              pathname: '/(tabs)/profil',
+                              params: { playerId: player.id },
+                            });
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <PlayerAvatar
+                            firstName={player.first_name}
+                            lastName={player.last_name}
+                            pictureUrl={player.picture}
+                            size={40}
+                          />
+                          <View style={styles.followingPlayerName}>
+                            <ThemedText style={[styles.followingPlayerFirstName, { color: colors.text }]}>
+                              {player.first_name}
+                            </ThemedText>
+                            <ThemedText style={[styles.followingPlayerLastName, { color: colors.text, opacity: 0.7 }]}>
+                              {player.last_name}
+                            </ThemedText>
+                          </View>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.unfollowButton, { borderColor: colors.text + '30' }]}
+                          onPress={() => {
+                            handleUnfollowPlayer(player);
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <IconSymbol name="trash" size={14} color={colors.text + '80'} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.modalEmpty}>
+                    <ThemedText style={[styles.modalEmptyText, { color: colors.text, opacity: 0.6 }]}>
+                      Vous ne suivez aucun joueur pour le moment
+                    </ThemedText>
+                  </View>
+                )
+              ) : (
+                followersPlayers.length > 0 ? (
+                  <View style={styles.followingList}>
+                    {followersPlayers.map((player) => (
+                      <TouchableOpacity
+                        key={player.id}
+                        style={[styles.followingItem, { borderBottomColor: colors.text + '15' }]}
+                        onPress={() => {
+                          setShowFollowingModal(false);
+                          router.push({
+                            pathname: '/(tabs)/profil',
+                            params: { playerId: player.id },
+                          });
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.followingPlayerInfo}>
+                          <PlayerAvatar
+                            firstName={player.first_name}
+                            lastName={player.last_name}
+                            pictureUrl={player.picture}
+                            size={40}
+                          />
+                          <View style={styles.followingPlayerName}>
+                            <ThemedText style={[styles.followingPlayerFirstName, { color: colors.text }]}>
+                              {player.first_name}
+                            </ThemedText>
+                            <ThemedText style={[styles.followingPlayerLastName, { color: colors.text, opacity: 0.7 }]}>
+                              {player.last_name}
+                            </ThemedText>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.modalEmpty}>
+                    <ThemedText style={[styles.modalEmptyText, { color: colors.text, opacity: 0.6 }]}>
+                      Personne ne vous suit pour le moment
+                    </ThemedText>
+                  </View>
+                )
+              )}
+            </View>
+          </ScrollView>
+        </ThemedView>
+      </Modal>
 
       {/* Modal de détails des matchs */}
       <Modal
@@ -1869,13 +2602,13 @@ const styles = StyleSheet.create({
   },
   profileHeader: {
     alignItems: 'center',
-    marginBottom: 28,
-    marginTop: 8,
+    marginBottom: 16,
+    marginTop: 4,
     position: 'relative',
   },
   profileHeaderModal: {
-    marginTop: 4,
-    marginBottom: 20,
+    marginTop: 0,
+    marginBottom: 12,
   },
   editIconButton: {
     position: 'absolute',
@@ -1900,43 +2633,56 @@ const styles = StyleSheet.create({
     lineHeight: 32,
   },
   profileName: {
-    fontSize: 26,
+    fontSize: 22,
     fontWeight: '700',
-    marginBottom: 6,
-    marginTop: 12,
+    marginBottom: 2,
+    marginTop: 8,
   },
   profileNameModal: {
-    fontSize: 20,
-    marginTop: 6,
-    marginBottom: 4,
+    fontSize: 18,
+    marginTop: 4,
+    marginBottom: 2,
   },
-  profileEmail: {
-    fontSize: 15,
+  profilePhone: {
+    fontSize: 13,
     fontWeight: '400',
-    marginBottom: 16,
+    marginBottom: 8,
+  },
+  followButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  followButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   badgesContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    gap: 8,
-    marginTop: 4,
+    gap: 6,
+    marginTop: 2,
   },
   badgesContainerModal: {
-    marginTop: 8,
-    marginBottom: 4,
+    marginTop: 6,
+    marginBottom: 2,
   },
   infoBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 16,
     borderWidth: 1,
-    gap: 6,
+    gap: 5,
   },
   infoBadgeText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   preferenceBadge: {
@@ -1957,6 +2703,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     marginBottom: 20,
+    borderWidth: 1,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
     shadowRadius: 8,
@@ -1981,6 +2728,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     marginBottom: 20,
+    borderWidth: 1,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
     shadowRadius: 8,
@@ -1989,7 +2737,35 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 20,
     fontWeight: '600',
+    marginBottom: 0,
+    flex: 1,
+    lineHeight: 24,
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 0,
+    minHeight: 24,
+  },
+  historyHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  sectionTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 16,
+    minHeight: 24,
+  },
+  expandIcon: {
+    transform: [{ rotate: '0deg' }],
+  },
+  expandIconExpanded: {
+    transform: [{ rotate: '90deg' }],
   },
   sectionSubtitle: {
     fontSize: 14,
@@ -2105,6 +2881,7 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
     paddingHorizontal: 8,
     borderRadius: 12,
+    borderWidth: 1.5,
   },
   statValue: {
     fontSize: 32,
@@ -2120,13 +2897,27 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   matchHistoryItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 12,
+    position: 'relative',
+  },
+  animationContainer: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    width: 200,
+    height: 200,
+    marginLeft: -100,
+    marginTop: -100,
+    zIndex: 1000,
   },
   matchHistoryBorder: {
     borderBottomWidth: 1,
+  },
+  matchHistoryContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   matchHistoryLeft: {
     flex: 1,
@@ -2149,6 +2940,210 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  matchHistoryFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    paddingTop: 4,
+    gap: 6,
+  },
+  actionsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reactionsSummary: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  reactionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  reactionEmoji: {
+    fontSize: 12,
+  },
+  reactionCount: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  reactionsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reactionButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reactionButtonActive: {
+    borderWidth: 2,
+  },
+  reactionEmojiButton: {
+    fontSize: 18,
+  },
+  reactionsSection: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    gap: 6,
+  },
+  commentsSection: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    gap: 6,
+  },
+  toggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    minWidth: 36,
+    justifyContent: 'center',
+  },
+  toggleButtonText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  commentsList: {
+    gap: 6,
+  },
+  commentItem: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 4,
+    alignItems: 'flex-start',
+  },
+  avatarContainer: {
+    paddingTop: 8,
+  },
+  commentDeleteButton: {
+    padding: 4,
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 24,
+    minHeight: 24,
+  },
+  followingList: {
+    gap: 0,
+  },
+  followingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  followingPlayerInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  followingPlayerName: {
+    flex: 1,
+  },
+  followingPlayerFirstName: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  followingPlayerLastName: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  unfollowButton: {
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 36,
+    minHeight: 36,
+  },
+  emptyFollowingContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
+  },
+  emptyFollowingText: {
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  followingSectionButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  followingSectionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  followingSectionButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  commentContent: {
+    flex: 1,
+    gap: 4,
+  },
+  commentBubble: {
+    padding: 8,
+    paddingTop: 6,
+    borderRadius: 10,
+    marginBottom: 2,
+  },
+  commentAuthor: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 1,
+  },
+  commentText: {
+    fontSize: 13,
+    lineHeight: 16,
+  },
+  commentDate: {
+    fontSize: 10,
+    marginTop: 2,
+  },
+  commentInputContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'flex-end',
+  },
+  commentInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    minHeight: 40,
+    maxHeight: 100,
+  },
+  commentSendButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   settingItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2163,6 +3158,23 @@ const styles = StyleSheet.create({
   settingLabel: {
     fontSize: 16,
     fontWeight: '400',
+  },
+  logoutButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  logoutButtonLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  logoutButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
   },
   // Styles pour la vue publique
   featuresList: {
@@ -2271,6 +3283,25 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     textAlign: 'center',
   },
+  formCard: {
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    marginBottom: 12,
+    gap: 12,
+  },
+  formHeader: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  formTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  formSubtitle: {
+    fontSize: 12,
+    fontWeight: '400',
+  },
   formContainer: {
     alignItems: 'center',
     gap: 12,
@@ -2279,15 +3310,48 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   formPill: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   formLabel: {
     fontSize: 13,
     fontWeight: '400',
+  },
+  streakCard: {
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 140,
+    justifyContent: 'center',
+  },
+  streakIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  streakValue: {
+    fontSize: 24,
+    fontWeight: '700',
+    lineHeight: 28,
+  },
+  streakLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  streakSubLabel: {
+    fontSize: 11,
+    fontWeight: '500',
   },
   opponentsContainer: {
     gap: 12,
@@ -2317,45 +3381,82 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   opponentBox: {
-    padding: 16,
-    borderRadius: 12,
-    gap: 8,
-  },
-  opponentHeader: {
-    flexDirection: 'row',
+    padding: 12,
+    borderRadius: 16,
+    gap: 6,
+    borderWidth: 1.5,
     alignItems: 'center',
-    gap: 8,
+  },
+  opponentEmojiContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 4,
+    width: '100%',
+    minHeight: 28,
+  },
+  opponentEmoji: {
+    fontSize: 20,
+    lineHeight: 24,
   },
   opponentIconContainer: {
     alignItems: 'center',
     marginBottom: 8,
   },
   opponentTitle: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '600',
-    marginBottom: 12,
-    minHeight: 32, // Hauteur minimale pour 2 lignes
     textAlign: 'center',
+    flex: 1,
+    minHeight: 28,
+    lineHeight: 14,
   },
   opponentAvatarContainer: {
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   opponentNamesContainer: {
     alignItems: 'center',
     marginBottom: 4,
     width: '100%',
+    gap: 1,
   },
   opponentFirstName: {
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+    lineHeight: 16,
   },
   opponentLastName: {
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '500',
     textAlign: 'center',
+    lineHeight: 14,
+  },
+  opponentStatsContainer: {
+    width: '100%',
+    alignItems: 'center',
+    gap: 4,
+  },
+  opponentStatsLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  opponentStatsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+  },
+  opponentStatBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    minWidth: 40,
+    alignItems: 'center',
+  },
+  opponentStatValue: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   opponentStats: {
     fontSize: 13,
@@ -2374,6 +3475,12 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
+  },
+  modalHeaderTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
   },
   modalTitle: {
     fontSize: 20,

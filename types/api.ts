@@ -83,3 +83,27 @@ export interface WaitingListEntryDTO {
   order_no: number | null;
 }
 
+// Relation de suivi entre joueurs
+export interface PlayerFollowDTO {
+  id: string; // GUID
+  follower_id: string; // GUID - qui suit
+  followed_id: string; // GUID - qui est suivi
+  created_at: string;
+}
+
+// Statut de suivi
+export interface FollowStatusDTO {
+  isFollowing: boolean;
+  followersCount: number;
+  followingCount: number;
+}
+
+// Commentaire sur un match
+export interface MatchCommentDTO {
+  id: string; // GUID
+  match_id: string; // GUID
+  player_id: string; // GUID du commentateur
+  text: string;
+  created_at: string;
+  player: PlayerDTO; // Informations sur le joueur qui a commenté
+}

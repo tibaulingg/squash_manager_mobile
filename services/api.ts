@@ -1,9 +1,11 @@
 import { API_BASE_URL } from '@/constants/config';
-import type { BoxDTO, MatchDTO, PlayerDTO, SeasonDTO, WaitingListEntryDTO } from '@/types/api';
+import type { BoxDTO, FollowStatusDTO, MatchCommentDTO, MatchDTO, PlayerDTO, PlayerFollowDTO, SeasonDTO, WaitingListEntryDTO } from '@/types/api';
 
 // Fonction helper simple pour les requêtes
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`;
+	const base = API_BASE_URL.replace(/\/+$/, '')
+	const path = endpoint.replace(/^\/+/, '')
+	const url = `${base}/${path}`
   
   try {
     const response = await fetch(url, options);
@@ -226,6 +228,80 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ PlayerId: playerId }),
+    }),
+
+  // Système de suivi (Follow)
+  followPlayer: (playerId: string, currentPlayerId: string) =>
+    fetchApi<PlayerFollowDTO>(`/PlayerFollows/${playerId}?currentPlayerId=${currentPlayerId}`, {
+      method: 'POST',
+    }),
+
+  unfollowPlayer: (playerId: string, currentPlayerId: string) =>
+    fetchApi<void>(`/PlayerFollows/${playerId}?currentPlayerId=${currentPlayerId}`, {
+      method: 'DELETE',
+    }),
+
+  getFollowStatus: (currentPlayerId: string, playerId: string) =>
+    fetchApi<FollowStatusDTO>(`/PlayerFollows/status/${playerId}?currentPlayerId=${currentPlayerId}`),
+
+  getFollowing: (currentPlayerId: string) =>
+    fetchApi<PlayerDTO[]>(`/PlayerFollows/following?currentPlayerId=${currentPlayerId}`),
+
+  getFollowedPlayersMatches: (playerId: string, limit: number = 50) =>
+    fetchApi<MatchDTO[]>(`/Matches/followed?playerId=${playerId}&limit=${limit}`),
+
+  // Commentaires de matchs
+  getMatchComments: (matchId: string) =>
+    fetchApi<MatchCommentDTO[]>(`/Matches/${matchId}/comments`),
+
+  getMatchCommentsBatch: (matchIds: string[], currentPlayerId: string) =>
+    fetchApi<{ [matchId: string]: MatchCommentDTO[] }>(`/Matches/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        MatchIds: matchIds,
+        CurrentPlayerId: currentPlayerId,
+      }),
+    }),
+
+  addMatchComment: (matchId: string, currentPlayerId: string, text: string) =>
+    fetchApi<MatchCommentDTO>(`/Matches/${matchId}/comments?currentPlayerId=${currentPlayerId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        PlayerId: currentPlayerId,
+        Text: text,
+      }),
+    }),
+
+  deleteMatchComment: (commentId: string, currentPlayerId: string) =>
+    fetchApi<void>(`/Matches/comments/${commentId}?currentPlayerId=${currentPlayerId}`, {
+      method: 'DELETE',
+    }),
+
+  // Réactions aux matchs
+  getMatchReactions: (matchIds: string[], currentPlayerId: string) => {
+    return fetchApi<{ [matchId: string]: { reactions: { [reaction: string]: number }, userReaction: string | null } }>(
+      `/Matches/reactions`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          MatchIds: matchIds,
+          CurrentPlayerId: currentPlayerId,
+        }),
+      }
+    );
+  },
+
+  reactToMatch: (matchId: string, currentPlayerId: string, reaction: string | null) =>
+    fetchApi<void>(`/Matches/${matchId}/react?currentPlayerId=${currentPlayerId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        PlayerId: currentPlayerId,
+        ReactionType: reaction,
+      }),
     }),
 };
 
