@@ -9,6 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { api } from '@/services/api';
 import type { MatchDTO, PlayerDTO } from '@/types/api';
 import { formatMatchScore, type MatchSpecialStatus } from '@/utils/match-helpers';
 
@@ -113,37 +114,41 @@ export function ActivityFeed({
   const [showReactions, setShowReactions] = useState<Set<string>>(new Set());
   const [showCommentInput, setShowCommentInput] = useState<Set<string>>(new Set());
   const [activeAnimations, setActiveAnimations] = useState<{ [itemId: string]: string | null }>({});
+  const [commentsLoaded, setCommentsLoaded] = useState(false);
   
-  // Charger les commentaires pour tous les matchs et memberships au début
+  // Charger tous les commentaires en batch (1 seule requête) au montage
   useEffect(() => {
-    if (!onLoadComments) return;
+    if (!currentPlayerId || commentsLoaded || matches.length === 0) return;
     
-    matches.forEach((item) => {
+    // Créer une clé unique basée sur les IDs des items pour éviter les rechargements inutiles
+    const matchesKey = matches.map(item => 
+      item.type === 'match' ? `m:${item.match.id}` : `s:${item.membershipId}`
+    ).sort().join(',');
+    
+    const entities = matches.map(item => {
       if (item.type === 'match') {
-        const matchId = item.match.id;
-        if (!matchComments[matchId]) {
-          onLoadComments(matchId, 'match')
-            .then((comments) => {
-              setMatchComments(prev => ({ ...prev, [matchId]: comments }));
-            })
-            .catch((error) => {
-              console.error('Erreur chargement commentaires:', error);
-            });
-        }
-      } else if (item.type === 'status_change') {
-        const membershipId = item.membershipId;
-        if (!matchComments[membershipId]) {
-          onLoadComments(membershipId, 'membership')
-            .then((comments) => {
-              setMatchComments(prev => ({ ...prev, [membershipId]: comments }));
-            })
-            .catch((error) => {
-              console.error('Erreur chargement commentaires membership:', error);
-            });
-        }
+        return { type: 'match' as const, id: item.match.id };
+      } else {
+        return { type: 'membership' as const, id: item.membershipId };
       }
     });
-  }, [matches.map(m => m.type === 'match' ? m.match.id : m.type === 'status_change' ? m.membershipId : '').join(','), onLoadComments]);
+    
+    if (entities.length > 0) {
+      setCommentsLoaded(true); // Marquer immédiatement pour éviter les appels multiples
+      
+      api.getCommentsBatch(entities, currentPlayerId)
+        .then((commentsData) => {
+          const commentsMap: { [itemId: string]: MatchCommentDTO[] } = {};
+          Object.entries(commentsData).forEach(([entityId, comments]) => {
+            commentsMap[entityId] = comments;
+          });
+          setMatchComments(commentsMap);
+        })
+        .catch((error) => {
+          console.error('Erreur chargement commentaires batch:', error);
+        });
+    }
+  }, [matches.map(m => m.type === 'match' ? m.match.id : m.membershipId).join(','), currentPlayerId]);
 
   const handlePostComment = async (itemId: string, entityType: 'match' | 'membership') => {
     const text = commentTexts[itemId]?.trim();
@@ -344,10 +349,20 @@ export function ActivityFeed({
                         onPress={() => {
                           setShowCommentInput(prev => {
                             const next = new Set(prev);
-                            if (next.has(membershipId)) {
-                              next.delete(membershipId);
-                            } else {
+                            const isOpening = !next.has(membershipId);
+                            if (isOpening) {
                               next.add(membershipId);
+                              if (onLoadComments && !matchComments[membershipId]) {
+                                onLoadComments(membershipId, 'membership')
+                                  .then((comments) => {
+                                    setMatchComments(prevComments => ({ ...prevComments, [membershipId]: comments }));
+                                  })
+                                  .catch((error) => {
+                                    console.error('Erreur chargement commentaires membership:', error);
+                                  });
+                              }
+                            } else {
+                              next.delete(membershipId);
                             }
                             return next;
                           });
@@ -737,10 +752,20 @@ export function ActivityFeed({
                     onPress={() => {
                       setShowCommentInput(prev => {
                         const next = new Set(prev);
-                        if (next.has(matchId)) {
-                          next.delete(matchId);
-                        } else {
+                        const isOpening = !next.has(matchId);
+                        if (isOpening) {
                           next.add(matchId);
+                          if (onLoadComments && !matchComments[matchId]) {
+                            onLoadComments(matchId, 'match')
+                              .then((comments) => {
+                                setMatchComments(prevComments => ({ ...prevComments, [matchId]: comments }));
+                              })
+                              .catch((error) => {
+                                console.error('Erreur chargement commentaires:', error);
+                              });
+                          }
+                        } else {
+                          next.delete(matchId);
                         }
                         return next;
                       });

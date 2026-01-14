@@ -67,9 +67,8 @@ export default function BoxScreen() {
       setIsLoading(true);
       setError(null);
       
-      console.log('Chargement des matchs depuis l\'API...');
       // D'abord récupérer les saisons pour obtenir la saison en cours
-      const allSeasons = await api.getSeasons();
+      const allSeasons = await api.getSeasonsCached();
 
       // Trouver la saison en cours (status = 'running' ou autre critère)
       const currentSeason = allSeasons.find((s) => s.status === 'running') || allSeasons[0];
@@ -184,7 +183,7 @@ export default function BoxScreen() {
     try {
       const [matches, seasons, players] = await Promise.all([
         api.getLiveMatches(),
-        api.getSeasons(),
+        api.getSeasonsCached(),
         api.getPlayersCached(),
       ]);
 
@@ -318,7 +317,12 @@ export default function BoxScreen() {
     setRefreshing(true);
 
     try {
-      await Promise.all([api.getPlayersCached(true), loadBoxesData(), loadLiveMatches()]);
+      await Promise.all([
+        api.getPlayersCached(true),
+        api.getSeasonsCached(true),
+        loadBoxesData(),
+        loadLiveMatches(),
+      ]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error) {
       console.error('Erreur lors du rafraîchissement:', error);

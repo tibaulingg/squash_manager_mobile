@@ -79,19 +79,19 @@ export default function HomeScreen() {
     position: number;
   }>>([]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (isRefresh = false) => {
     if (!isAuthenticated || !user) {
       setLoading(false);
       return;
     }
     
     try {
-      if (!refreshing) {
+      if (!isRefresh) {
         setLoading(true);
       }
       
       // 1. Trouver le joueur par email
-      const players = await api.getPlayersCached(refreshing);
+      const players = await api.getPlayersCached(isRefresh);
       setAllPlayers(players); // Sauvegarder tous les joueurs
       const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
       
@@ -116,13 +116,14 @@ export default function HomeScreen() {
       }
       
       // 2. Récupérer la saison en cours
-      const seasons = await api.getSeasons();
+      const seasons = await api.getSeasonsCached(isRefresh);
       const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
       
       if (!currentSeason) return;
       
-      // 3. Récupérer les matchs du joueur
-      const matches = await api.getMatches(currentSeason.id);
+      // 3. Récupérer les matchs du joueur (filtrer par box_id si le joueur a un box pour réduire la taille)
+      const boxId = player.current_box?.box_id;
+      const matches = await api.getMatches(currentSeason.id, boxId);
       const playerMatches = matches.filter(
         (m) => m.player_a_id === player.id || m.player_b_id === player.id
       );
@@ -280,23 +281,20 @@ export default function HomeScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user, refreshing]);
+  }, [user, isAuthenticated]);
 
   useEffect(() => {
-    loadData();
+    loadData(false);
   }, [loadData]);
 
-  // Recharger les données quand on revient sur l'onglet
-  useFocusEffect(
-    useCallback(() => {
-      loadData();
-    }, [loadData])
-  );
+  // NOTE: on évite useFocusEffect pour éviter les doublons de requêtes.
+  // Le refresh se fait via pull-to-refresh.
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
-    await loadData();
+    // loadData(true) va déjà forcer le refresh des caches avec isRefresh=true
+    await loadData(true);
   };
 
   const handleCall = async (phone: string) => {
@@ -951,15 +949,7 @@ export default function HomeScreen() {
 
             <View style={styles.matchesList}>
               {boxMatches.map((item, index) => {
-                console.log('[MES MATCHS DEBUG] Match:', {
-                  matchId: item.match.id,
-                  opponent: `${item.opponent.first_name} ${item.opponent.last_name}`,
-                  delayedPlayerId: item.match.delayed_player_id,
-                  delayedStatus: item.match.delayed_status,
-                  delayedRequestedAt: item.match.delayed_requested_at,
-                  delayedResolvedAt: item.match.delayed_resolved_at,
-                  isCompleted: item.isCompleted,
-                });
+
                 
                 return (
                 <View key={item.match.id}>
@@ -1169,29 +1159,14 @@ export default function HomeScreen() {
 
         {/* Section Demandes de report */}
         {currentPlayer && boxMatches.length > 0 && (() => {
-          console.log('[DELAY REQUESTS DEBUG] Total boxMatches:', boxMatches.length);
-          console.log('[DELAY REQUESTS DEBUG] CurrentPlayer ID:', currentPlayer.id);
-          
+
           // Récupérer toutes les demandes de report en cours qui concernent le joueur actuel
           const delayRequests = boxMatches
             .filter(item => {
               const match = item.match;
               const isPlayerA = match.player_a_id === currentPlayer.id;
               const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
-              
-              console.log('[DELAY REQUESTS DEBUG] Match:', {
-                matchId: match.id,
-                currentPlayerId: currentPlayer.id,
-                playerAId: match.player_a_id,
-                playerBId: match.player_b_id,
-                delayedPlayerId: match.delayed_player_id,
-                delayStatus: match.delayed_status,
-                isPlayerA,
-                opponentId,
-              });
-              
- 
-  
+
               const delayStatus = match.delayed_status;
               
               // Exclure les demandes acceptées, rejetées ou annulées
@@ -1204,25 +1179,14 @@ export default function HomeScreen() {
                                (delayStatus === null && hasRequestedAt && !hasResolvedAt) ||
                                (!delayStatus && hasRequestedAt && !hasResolvedAt);
               
-              console.log('[DELAY REQUESTS DEBUG] Delay status check:', {
-                delayStatus,
-                delayedRequestedAt: match.delayed_requested_at,
-                delayedResolvedAt: match.delayed_resolved_at,
-                hasRequestedAt,
-                hasResolvedAt,
-                isPending,
-                willInclude: isPending,
-              });
-              
+
               // Inclure seulement les demandes en attente qui concernent le joueur actuel
               if (!isPending) {
-                console.log('[DELAY REQUESTS DEBUG] Request is not pending (accepted/rejected/cancelled or no request), skipping');
                 return false;
               }
               
               // Vérifier qu'il y a bien une demande (delayed_requested_at doit exister)
               if (!hasRequestedAt) {
-                console.log('[DELAY REQUESTS DEBUG] No delayed_requested_at, skipping');
                 return false;
               }
               
@@ -1233,23 +1197,10 @@ export default function HomeScreen() {
               opponent: item.opponent,
             }));
 
-          console.log('[DELAY REQUESTS DEBUG] Filtered delayRequests:', delayRequests.length);
-          delayRequests.forEach((req, idx) => {
-            console.log(`[DELAY REQUESTS DEBUG] Request ${idx + 1}:`, {
-              matchId: req.match.id,
-              opponent: `${req.opponent.first_name} ${req.opponent.last_name}`,
-              delayedPlayerId: req.match.delayed_player_id,
-              delayStatus: req.match.delayed_status,
-            });
-          });
-
           if (delayRequests.length === 0) {
-            console.log('[DELAY REQUESTS DEBUG] No delay requests to display');
             return null;
           }
-          
-          console.log('[DELAY REQUESTS DEBUG] Displaying', delayRequests.length, 'delay requests');
-
+     
           return (
             <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
               <View style={styles.cardHeader}>

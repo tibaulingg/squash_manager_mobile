@@ -67,15 +67,15 @@ export default function RankingScreen() {
   const [showPlayerModal, setShowPlayerModal] = useState(false);
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(null);
 
-  const calculateRankings = useCallback(async () => {
+  const calculateRankings = useCallback(async (isRefresh = false) => {
     try {
-      if (!refreshing) {
+      if (!isRefresh) {
         setLoading(true);
       }
       
       // 1. Récupérer tous les joueurs et TOUS les matchs
       const [players, allMatches] = await Promise.all([
-        api.getPlayersCached(refreshing),
+        api.getPlayersCached(isRefresh),
         api.getMatches(), // Récupérer tous les matchs
       ]);
       
@@ -86,9 +86,6 @@ export default function RankingScreen() {
           setCurrentPlayerId(currentPlayer.id);
         }
       }
-      
-      console.log(`[RANKING DEBUG] Total joueurs actifs:`, players.filter(p => p.active).length);
-      console.log(`[RANKING DEBUG] Total matchs récupérés:`, allMatches.length);
       
       // 2. Grouper les matchs par année (basé sur la date de jeu ou date prévue)
       const yearMap = new Map<number, typeof allMatches>();
@@ -113,9 +110,7 @@ export default function RankingScreen() {
           matchCount: matches.length 
         }))
         .sort((a, b) => b.year - a.year);
-      
-      console.log(`[RANKING DEBUG] Années disponibles:`, years.map(y => `${y.year} (${y.matchCount} matchs)`));
-      
+
       setAvailableYears(years);
       
       // Sélectionner l'année courante par défaut si pas encore sélectionnée
@@ -129,11 +124,8 @@ export default function RankingScreen() {
       const yearToUse = selectedYear || years[0]?.year;
       const matches = yearMap.get(yearToUse) || [];
       
-      console.log(`[RANKING DEBUG] Année sélectionnée: ${yearToUse}`);
-      console.log(`[RANKING DEBUG] Matchs pour ${yearToUse}:`, matches.length);
-      
+
       if (matches.length === 0) {
-        console.log(`[RANKING DEBUG] ⚠️ Aucun match trouvé pour l'année ${yearToUse}`);
         setRankings([]);
         setLoading(false);
         setRefreshing(false);
@@ -171,7 +163,6 @@ export default function RankingScreen() {
         if (!matchDate) {
           invalidReasons.noDate++;
           invalidMatches++;
-          console.log(`[RANKING DEBUG] Match ${match.id} ignoré: pas de date`);
           return;
         }
         
@@ -183,14 +174,12 @@ export default function RankingScreen() {
         if (!hasScore) {
           invalidReasons.noScore++;
           invalidMatches++;
-          console.log(`[RANKING DEBUG] Match ${match.id} ignoré: pas de score (score_a: ${match.score_a}, score_b: ${match.score_b})`);
           return;
         }
         
         if (hasSpecialStatus) {
           invalidReasons.specialStatus++;
           invalidMatches++;
-          console.log(`[RANKING DEBUG] Match ${match.id} ignoré: cas spécial (no_show: ${match.no_show_player_id}, retired: ${match.retired_player_id}, delayed: ${match.delayed_player_id})`);
           return;
         }
         
@@ -200,19 +189,10 @@ export default function RankingScreen() {
         if (!playerA || !playerB) {
           invalidReasons.playerNotFound++;
           invalidMatches++;
-          console.log(`[RANKING DEBUG] Match ${match.id} ignoré: joueur non trouvé (A: ${playerA ? 'OK' : 'MANQUANT'}, B: ${playerB ? 'OK' : 'MANQUANT'})`);
           return;
         }
         
-        // Vérifier les points
-        const pointsA = match.points_a;
-        const pointsB = match.points_b;
-        console.log(`[RANKING DEBUG] Match ${match.id} - Points A: ${pointsA}, Points B: ${pointsB}, Score: ${match.score_a}-${match.score_b}`);
-        
-        if (pointsA === null || pointsA === undefined || pointsB === null || pointsB === undefined) {
-          console.log(`[RANKING DEBUG] ⚠️ Match ${match.id} a un score mais pas de points!`);
-        }
-        
+
         validMatches++;
         
         if (playerA) {
@@ -224,7 +204,6 @@ export default function RankingScreen() {
           } else {
             playerA.losses += 1;
           }
-          console.log(`[RANKING DEBUG] Match ${match.id}: ${playerA.player.first_name} ${playerA.player.last_name} - Score: ${match.score_a}-${match.score_b}, Points: ${pointsA} (total: ${playerA.totalPoints})`);
         }
         
         if (playerB) {
@@ -236,20 +215,11 @@ export default function RankingScreen() {
           } else {
             playerB.losses += 1;
           }
-          console.log(`[RANKING DEBUG] Match ${match.id}: ${playerB.player.first_name} ${playerB.player.last_name} - Score: ${match.score_b}-${match.score_a}, Points: ${pointsB} (total: ${playerB.totalPoints})`);
         }
       });
       
-      console.log(`[RANKING DEBUG] Matchs valides: ${validMatches}, invalides: ${invalidMatches}`);
-      console.log(`[RANKING DEBUG] Raisons d'invalidité:`, invalidReasons);
-      
       // Afficher les stats par joueur
       const playersWithMatches = Array.from(playerStats.values()).filter(p => p.matchesPlayed > 0);
-      console.log(`[RANKING DEBUG] Joueurs avec matchs: ${playersWithMatches.length}`);
-      playersWithMatches.forEach(p => {
-        console.log(`[RANKING DEBUG] - ${p.player.first_name} ${p.player.last_name}: ${p.totalPoints}pts, ${p.matchesPlayed} matchs (${p.wins}V-${p.losses}D)`);
-      });
-      
       // 6. Trier par points décroissants
       const sortedRankings = Array.from(playerStats.values())
         .filter(p => p.matchesPlayed > 0) // Ne montrer que ceux qui ont joué
@@ -265,8 +235,6 @@ export default function RankingScreen() {
           return b.matchesPlayed - a.matchesPlayed;
         });
       
-      console.log(`[RANKING DEBUG] Classement final: ${sortedRankings.length} joueurs`);
-      
       setRankings(sortedRankings);
     } catch (error) {
       console.error('Erreur calcul classement:', error);
@@ -274,16 +242,16 @@ export default function RankingScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [refreshing, selectedYear]);
+  }, [selectedYear, isAuthenticated, user]);
 
   useEffect(() => {
-    calculateRankings();
+    calculateRankings(false);
   }, [calculateRankings]);
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
-    await calculateRankings();
+    await calculateRankings(true);
   };
 
   const handleYearChange = (year: number) => {

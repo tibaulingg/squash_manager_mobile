@@ -297,19 +297,16 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       }
       
       // 2. Récupérer la saison en cours
-      const seasons = await api.getSeasons();
+      const seasons = await api.getSeasonsCached();
       const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
       
       if (!currentSeason) return;
       
       // 3. Récupérer TOUS les matchs du joueur (toutes saisons confondues)
-      const matches = await api.getMatches(); // Pas de seasonId = tous les matchs
-      const playerMatches = matches.filter(
-        (m) => m.player_a_id === player.id || m.player_b_id === player.id
-      );
+      const matches = await api.getMatches(undefined, undefined, player.id);
+      const playerMatches = matches; // Déjà filtrés par player_id côté serveur
       
-      console.log(`Total matchs du joueur (toutes saisons): ${playerMatches.length}`);
-      
+   
       // Filtrer uniquement les matchs VRAIMENT terminés pour les stats (avec score, pas 0-0, sans cas spéciaux)
       const completedMatchesForStats = playerMatches.filter(
         (m) => m.score_a !== null && 
@@ -319,9 +316,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                !m.retired_player_id && 
                !m.delayed_player_id
       );
-      
-      console.log(`Matchs terminés pour stats: ${completedMatchesForStats.length}`);
-      
+
       // Calculer les stats
       let wins = 0;
       let losses = 0;
@@ -341,8 +336,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       const total = wins + losses;
       const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
       
-      console.log(`Stats: ${wins}V - ${losses}D - ${winRate}%`);
-      
+
       setStats({ wins, losses, winRate });
       
       // Calculer les statistiques avancées
@@ -502,7 +496,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       
       // 3. Total de points (Golden Ranking) - calculer depuis toutes les saisons
       let totalPoints = 0;
-      const allSeasons = await api.getSeasons();
+      const allSeasons = await api.getSeasonsCached();
       const currentYear = new Date().getFullYear();
       
       for (const season of allSeasons) {
@@ -649,8 +643,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           return dateB - dateA;
         });
       
-      console.log(`Matchs pour historique complet: ${sortedMatches.length}`);
-      
+
       const history = sortedMatches.map((match) => {
         const isPlayerA = match.player_a_id === player.id;
         const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
@@ -676,9 +669,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           date: matchDate,
         };
       });
-      
-      console.log(`Historique créé: ${history.length} matchs`);
-      
+ 
       setRecentMatches(history);
       
       // Charger les réactions et commentaires pour tous les matchs (API unifiée)
@@ -752,9 +743,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       setUpdatingStatus(true);
       try {
         await api.updatePlayerNextBoxStatus(currentPlayer.id, status);
-        console.log('Statut mis à jour avec succès');
       } catch (error) {
-        console.error('Erreur mise à jour statut:', error);
         Alert.alert('Erreur', 'Impossible de mettre à jour le statut');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;

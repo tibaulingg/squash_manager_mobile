@@ -23,12 +23,12 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
   
   try {
     const response = await fetch(url, options);
-
-    console.log('url', url)
-    
+   
     // Lire le body une seule fois
     const text = await response.text();
-    
+
+    console.log('url | reponse size', url, text.length)
+
     if (!response.ok) {
       // Parser le body d'erreur si disponible
       let errorJson: any = null;
@@ -104,17 +104,53 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 // --- Simple in-memory cache (app session) ---
 let playersCache: PlayerDTO[] | null = null;
 let playersCachePromise: Promise<PlayerDTO[]> | null = null;
+let seasonsCache: SeasonDTO[] | null = null;
+let seasonsCachePromise: Promise<SeasonDTO[]> | null = null;
 
 // Services API minimaux
 export const api = {
   // Saisons
   getSeasons: () => fetchApi<SeasonDTO[]>('/Seasons'),
   
+  /**
+   * Retourne les saisons en cache (mémoire) pour éviter les appels répétés.
+   * - 1er appel: fetch réseau + cache
+   * - appels suivants: renvoie le cache
+   * - forceRefresh=true: refetch + remplace le cache
+   */
+  getSeasonsCached: (forceRefresh = false) => {
+    if (!forceRefresh && seasonsCache) return Promise.resolve(seasonsCache);
+    if (!forceRefresh && seasonsCachePromise) return seasonsCachePromise;
+
+    seasonsCachePromise = fetchApi<SeasonDTO[]>('/Seasons')
+      .then((seasons) => {
+        seasonsCache = seasons;
+        return seasons;
+      })
+      .finally(() => {
+        seasonsCachePromise = null;
+      });
+
+    return seasonsCachePromise;
+  },
+  
+  clearSeasonsCache: () => {
+    seasonsCache = null;
+    seasonsCachePromise = null;
+  },
+  
   // Boxes
   getBoxes: (seasonId: string) => fetchApi<BoxDTO[]>(`/Boxes?season_id=${seasonId}`),
   
   // Matchs
-  getMatches: (seasonId?: string) => fetchApi<MatchDTO[]>(`/Matches${seasonId ? `?season_id=${seasonId}` : ''}`),
+  getMatches: (seasonId?: string, boxId?: string, playerId?: string) => {
+    const params = new URLSearchParams();
+    if (seasonId) params.append('season_id', seasonId);
+    if (boxId) params.append('box_id', boxId);
+    if (playerId) params.append('player_id', playerId);
+    const queryString = params.toString();
+    return fetchApi<MatchDTO[]>(`/Matches${queryString ? `?${queryString}` : ''}`);
+  },
   
   // Joueurs
   getPlayers: () => fetchApi<PlayerDTO[]>('/Players'),

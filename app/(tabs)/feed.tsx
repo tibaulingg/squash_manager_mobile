@@ -1,5 +1,4 @@
 import * as Haptics from 'expo-haptics';
-import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -64,7 +63,7 @@ export default function FeedScreen() {
   }, [user, isAuthenticated]);
 
   // Charger la liste des joueurs suivis et leurs matchs
-  const loadFollowedPlayers = useCallback(async () => {
+  const loadFollowedPlayers = useCallback(async (sharedFollowing?: PlayerDTO[], isRefresh = false) => {
     if (!currentPlayer?.id) {
       setFollowedPlayers([]);
       setFollowedPlayersMatches([]);
@@ -81,12 +80,15 @@ export default function FeedScreen() {
     isLoadingFollowedPlayersRef.current = true;
     
     try {
-      if (!refreshing) {
+      if (!isRefresh) {
         setLoading(true);
       }
       
-      // Récupérer les joueurs suivis
-      const following = await api.getFollowing(currentPlayer.id);
+      // Récupérer les joueurs suivis (ou utiliser ceux partagés)
+      let following = sharedFollowing;
+      if (!following) {
+        following = await api.getFollowing(currentPlayer.id);
+      }
       const followedIds = following.map(p => p.id);
       setFollowedPlayers(followedIds);
       
@@ -98,8 +100,12 @@ export default function FeedScreen() {
       const oneWeekAgo = new Date(todayStart);
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
  
-      // Récupérer tous les matchs (pour avoir aussi ceux du joueur connecté)
-      const allMatches = await api.getMatches();
+      // Récupérer la saison en cours
+      const seasons = await api.getSeasonsCached(isRefresh);
+      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+      
+      // Récupérer tous les matchs de la saison en cours (pour avoir aussi ceux du joueur connecté)
+      const allMatches = await api.getMatches(currentSeason?.id);
    
       // Filtrer les matchs : seulement ceux des 7 derniers jours avec résultats valides
       // Inclure les matchs des joueurs suivis ET les matchs du joueur connecté
@@ -162,27 +168,8 @@ export default function FeedScreen() {
       const players = await api.getPlayersCached();
       setAllPlayers(players);
       
-      // Charger les réactions pour tous les matchs valides
-      if (validMatches.length > 0) {
-        try {
-          const matchIds = validMatches.map(m => m.id);
-          const reactionsData = await api.getMatchReactions(matchIds, currentPlayer.id);
-
-          // Transformer les données de réactions
-          const reactionsMap: { [matchId: string]: { [reaction: string]: number } } = {};
-          const userReactionsMap: { [matchId: string]: string | null } = {};
-          
-          Object.entries(reactionsData).forEach(([matchId, data]) => {
-            reactionsMap[matchId] = data.reactions || {};
-            userReactionsMap[matchId] = data.userReaction || null;
-          });
-          
-          setMatchReactions(reactionsMap);
-          setUserReactions(userReactionsMap);
-        } catch (error) {
-          console.error('Erreur chargement réactions:', error);
-        }
-      }
+      // NOTE: on ne charge plus les réactions "match only" ici.
+      // Les réactions sont chargées en un seul appel unifié plus bas (match + membership).
       
       // Transformer les matchs pour l'ActivityFeed
       const matchItems = validMatches.map((match) => {
@@ -295,10 +282,7 @@ export default function FeedScreen() {
       setFollowedPlayersMatches(feedItems);
     } catch (error: any) {
       console.error('Erreur chargement joueurs suivis:', error);
-      // Ne pas vider les états en cas d'erreur pour éviter les boucles
-      // Si l'API n'est pas encore implémentée, on ignore silencieusement
       if (error.message?.includes('404') || error.message?.includes('Not Found')) {
-        console.log('Endpoint getFollowing non implémenté, ignoré');
         setFollowedPlayers([]);
         setFollowedPlayersMatches([]);
       }
@@ -307,7 +291,7 @@ export default function FeedScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentPlayer?.id, refreshing]);
+  }, [currentPlayer?.id]);
 
   useEffect(() => {
     if (currentPlayer?.id) {
@@ -316,18 +300,23 @@ export default function FeedScreen() {
   }, [currentPlayer?.id, loadFollowedPlayers]);
 
   // Charger les matchs en live (seulement ceux des joueurs suivis)
-  const loadLiveMatches = useCallback(async () => {
+  const loadLiveMatches = useCallback(async (sharedFollowing?: PlayerDTO[], isRefresh = false) => {
     if (!currentPlayer?.id) {
       setLiveMatches([]);
       return;
     }
 
     try {
-      const [matches, seasons, players, following] = await Promise.all([
+      // Si following n'est pas fourni, le charger (mais on évite de le charger 2 fois)
+      let following = sharedFollowing;
+      if (!following) {
+        following = await api.getFollowing(currentPlayer.id);
+      }
+
+      const [matches, seasons, players] = await Promise.all([
         api.getLiveMatches(),
-        api.getSeasons(),
-        api.getPlayersCached(refreshing),
-        api.getFollowing(currentPlayer.id),
+        api.getSeasonsCached(isRefresh),
+        api.getPlayersCached(isRefresh),
       ]);
 
       setAllPlayers(players);
@@ -353,27 +342,35 @@ export default function FeedScreen() {
 
   useEffect(() => {
     loadLiveMatches();
-    // Rafraîchir automatiquement toutes les X secondes
-    const interval = setInterval(() => {
-      loadLiveMatches();
-    }, LIVE_MATCHES_REFRESH_INTERVAL * 1000);
-    return () => clearInterval(interval);
   }, [loadLiveMatches]);
 
-  // Recharger les données quand on revient sur l'onglet
-  useFocusEffect(
-    useCallback(() => {
-      if (currentPlayer?.id) {
-        loadFollowedPlayers();
-      }
-      loadLiveMatches();
-    }, [currentPlayer?.id, loadFollowedPlayers, loadLiveMatches])
-  );
+  // NOTE: on évite le refresh automatique + reload au focus (trop de requêtes).
+  // Le feed se met à jour via pull-to-refresh.
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
-    await Promise.all([loadFollowedPlayers(), loadLiveMatches()]);
+    
+    // Charger getFollowing une seule fois et le partager entre les deux fonctions
+    if (!currentPlayer?.id) {
+      setRefreshing(false);
+      return;
+    }
+    
+    try {
+      // Charger following une seule fois pour le partager
+      const following = await api.getFollowing(currentPlayer.id);
+      
+      // loadFollowedPlayers(true) et loadLiveMatches(true) vont déjà forcer le refresh des caches avec isRefresh=true
+      await Promise.all([
+        loadFollowedPlayers(following, true),
+        loadLiveMatches(following, true),
+      ]);
+    } catch (error) {
+      console.error('Erreur lors du refresh:', error);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const handleReaction = async (itemId: string, reaction: string, type: 'match' | 'status') => {

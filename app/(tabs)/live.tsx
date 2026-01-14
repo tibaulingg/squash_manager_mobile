@@ -31,16 +31,16 @@ export default function LiveMatchesScreen() {
   const [showPlayerModal, setShowPlayerModal] = useState(false);
 
   // Charger les matchs en live
-  const loadLiveMatches = useCallback(async () => {
+  const loadLiveMatches = useCallback(async (isRefresh = false) => {
     try {
-      if (!refreshing) {
+      if (!isRefresh) {
         setLoading(true);
       }
 
       const [matches, seasons, players] = await Promise.all([
         api.getLiveMatches(),
-        api.getSeasons(),
-        api.getPlayersCached(refreshing),
+        api.getSeasonsCached(isRefresh),
+        api.getPlayersCached(isRefresh),
       ]);
 
       setAllPlayers(players);
@@ -59,26 +59,26 @@ export default function LiveMatchesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [refreshing]);
+  }, []);
 
   useEffect(() => {
-    loadLiveMatches();
+    loadLiveMatches(false);
     // Rafraîchir toutes les 30 secondes
-    const interval = setInterval(loadLiveMatches, 30000);
+    const interval = setInterval(() => loadLiveMatches(false), 30000);
     return () => clearInterval(interval);
   }, [loadLiveMatches]);
 
   // Recharger les données quand on revient sur l'onglet
   useFocusEffect(
     useCallback(() => {
-      loadLiveMatches();
+      loadLiveMatches(false);
     }, [loadLiveMatches])
   );
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
-    await loadLiveMatches();
+    await loadLiveMatches(true);
   };
 
   if (!isAuthenticated) {
