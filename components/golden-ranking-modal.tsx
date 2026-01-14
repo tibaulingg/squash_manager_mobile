@@ -71,11 +71,8 @@ export function GoldenRankingModal({ visible, onClose }: GoldenRankingModalProps
         setLoading(true);
       }
       
-      // 1. Récupérer tous les joueurs et TOUS les matchs
-        const [players, allMatches] = await Promise.all([
-          api.getPlayersCached(),
-        api.getMatches(),
-      ]);
+      // 1. Récupérer tous les joueurs
+      const players = await api.getPlayersCached();
       
       // Identifier l'utilisateur connecté
       if (isAuthenticated && user) {
@@ -85,34 +82,27 @@ export function GoldenRankingModal({ visible, onClose }: GoldenRankingModalProps
         }
       }
       
-      // 2. Grouper les matchs par année
-      const yearMap = new Map<number, typeof allMatches>();
+      // 2. Déterminer l'année à utiliser (année courante par défaut si aucune sélectionnée)
+      const currentYear = new Date().getFullYear();
+      const yearToUse = selectedYear || currentYear;
       
-      allMatches.forEach(match => {
-        const matchDate = match.played_at || match.scheduled_at;
-        if (matchDate) {
-          const year = new Date(matchDate).getFullYear();
-          if (!yearMap.has(year)) {
-            yearMap.set(year, []);
-          }
-          yearMap.get(year)!.push(match);
+      // 3. Initialiser les années disponibles si nécessaire (basé sur l'année courante et quelques années précédentes/suivantes)
+      if (availableYears.length === 0) {
+        const years = [];
+        // Générer une liste d'années autour de l'année courante (5 ans avant, 1 an après)
+        for (let i = currentYear - 5; i <= currentYear + 1; i++) {
+          years.push(i);
         }
-      });
-      
-      // Créer la liste des années disponibles
-      const years = Array.from(yearMap.keys()).sort((a, b) => b - a);
-      setAvailableYears(years);
-      
-      // Sélectionner l'année courante par défaut
-      if (selectedYear === null && years.length > 0) {
-        const currentYear = new Date().getFullYear();
-        const yearToSelect = years.includes(currentYear) ? currentYear : years[0];
-        setSelectedYear(yearToSelect);
+        setAvailableYears(years.sort((a, b) => b - a));
+        
+        // Sélectionner l'année courante par défaut si aucune n'est sélectionnée
+        if (selectedYear === null) {
+          setSelectedYear(currentYear);
+        }
       }
       
-      // 3. Filtrer les matchs de l'année sélectionnée
-      const yearToUse = selectedYear || years[0];
-      const matches = yearMap.get(yearToUse) || [];
+      // 4. Récupérer les matchs filtrés par année
+      const matches = await api.getMatches(undefined, undefined, undefined, yearToUse);
       
       if (matches.length === 0) {
         setRankings([]);

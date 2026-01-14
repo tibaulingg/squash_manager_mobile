@@ -143,11 +143,12 @@ export const api = {
   getBoxes: (seasonId: string) => fetchApi<BoxDTO[]>(`/Boxes?season_id=${seasonId}`),
   
   // Matchs
-  getMatches: (seasonId?: string, boxId?: string, playerId?: string) => {
+  getMatches: (seasonId?: string, boxId?: string, playerId?: string, year?: number) => {
     const params = new URLSearchParams();
     if (seasonId) params.append('season_id', seasonId);
     if (boxId) params.append('box_id', boxId);
     if (playerId) params.append('player_id', playerId);
+    if (year) params.append('year', year.toString());
     const queryString = params.toString();
     return fetchApi<MatchDTO[]>(`/Matches${queryString ? `?${queryString}` : ''}`);
   },

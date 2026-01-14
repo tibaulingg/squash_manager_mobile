@@ -9,10 +9,12 @@ import { AppBar } from '@/components/app-bar';
 import { BoxTable } from '@/components/box-table';
 import { GoldenRankingModal } from '@/components/golden-ranking-modal';
 import { LiveMatchCard } from '@/components/live-match-card';
+import { PlayerChatModal } from '@/components/player-chat-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
+import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
@@ -60,6 +62,9 @@ export default function BoxScreen() {
   const [liveMatches, setLiveMatches] = useState<MatchDTO[]>([]);
   const [allBoxes, setAllBoxes] = useState<BoxDTO[]>([]);
   const [showGoldenRankingModal, setShowGoldenRankingModal] = useState(false);
+  const [showChatModal, setShowChatModal] = useState(false);
+  const [selectedPlayerForChat, setSelectedPlayerForChat] = useState<{ id: string; name: string } | null>(null);
+  const { user } = useAuth();
 
   // Charger les données depuis l'API
   const loadBoxesData = useCallback(async () => {
@@ -338,6 +343,13 @@ export default function BoxScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, []);
 
+  const handleStartChat = useCallback((playerId: string, playerName: string) => {
+    if (!user || user.id === playerId) return; // Ne pas discuter avec soi-même
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedPlayerForChat({ id: playerId, name: playerName });
+    setShowChatModal(true);
+  }, [user]);
+
   // Afficher le chargement initial
   if (isLoading) {
     return (
@@ -511,6 +523,25 @@ export default function BoxScreen() {
             setShowPlayerModal(false);
             setSelectedPlayerId(null);
           }}
+          onStartChat={(playerId: string, playerName: string) => {
+            setShowPlayerModal(false);
+            setSelectedPlayerId(null);
+            handleStartChat(playerId, playerName);
+          }}
+        />
+      )}
+      
+      {/* Modal Chat Joueur */}
+      {showChatModal && selectedPlayerForChat && user && (
+        <PlayerChatModal
+          visible={showChatModal}
+          currentPlayerId={user.id}
+          otherPlayerId={selectedPlayerForChat.id}
+          otherPlayerName={selectedPlayerForChat.name}
+          onClose={() => {
+            setShowChatModal(false);
+            setSelectedPlayerForChat(null);
+          }}
         />
       )}
       
@@ -519,6 +550,20 @@ export default function BoxScreen() {
         visible={showGoldenRankingModal}
         onClose={() => setShowGoldenRankingModal(false)}
       />
+      
+      {/* Modal Chat Joueur */}
+      {showChatModal && selectedPlayerForChat && user && (
+        <PlayerChatModal
+          visible={showChatModal}
+          currentPlayerId={user.id}
+          otherPlayerId={selectedPlayerForChat.id}
+          otherPlayerName={selectedPlayerForChat.name}
+          onClose={() => {
+            setShowChatModal(false);
+            setSelectedPlayerForChat(null);
+          }}
+        />
+      )}
     </ThemedView>
   );
 }

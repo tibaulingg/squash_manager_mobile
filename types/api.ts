@@ -101,7 +101,7 @@ export interface FollowStatusDTO {
 }
 
 // Type d'entité pour les réactions et commentaires
-export type EntityType = 'match' | 'membership';
+export type EntityType = 'match' | 'membership' | 'box' | 'conversation';
 
 // Commentaire générique (peut être sur un match, membership, etc.)
 export interface CommentDTO {

@@ -76,9 +76,10 @@ interface ProfileScreenProps {
   isModal?: boolean;
   playerId?: string;
   onClose?: () => void;
+  onStartChat?: (playerId: string, playerName: string) => void;
 }
 
-export default function ProfileScreen({ isModal = false, playerId, onClose }: ProfileScreenProps = {}) {
+export default function ProfileScreen({ isModal = false, playerId, onClose, onStartChat }: ProfileScreenProps = {}) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const router = useRouter();
@@ -1163,14 +1164,30 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
               <IconSymbol name="pencil.circle.fill" size={28} color={colors.text} />
             </TouchableOpacity>
           )}
-          {isModal && onClose && (
-            <TouchableOpacity
-              style={[styles.editIconButton, styles.editIconButtonRight, { backgroundColor: colors.text + '08' }]}
-              onPress={onClose}
-              activeOpacity={0.7}
-            >
-              <IconSymbol name="xmark" size={28} color={colors.text} />
-            </TouchableOpacity>
+          {isModal && (
+            <View style={styles.modalHeaderButtons}>
+              {user && currentPlayer && user.id !== currentPlayer.id && onStartChat && (
+                <TouchableOpacity
+                  style={[styles.chatIconButton, { backgroundColor: PRIMARY_COLOR + '15' }]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    onStartChat(currentPlayer.id, `${currentPlayer.first_name} ${currentPlayer.last_name}`);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <IconSymbol name="bubble.left.and.bubble.right.fill" size={24} color={PRIMARY_COLOR} />
+                </TouchableOpacity>
+              )}
+              {onClose && (
+                <TouchableOpacity
+                  style={[styles.editIconButton, styles.editIconButtonRight, { backgroundColor: colors.text + '08' }]}
+                  onPress={onClose}
+                  activeOpacity={0.7}
+                >
+                  <IconSymbol name="xmark" size={28} color={colors.text} />
+                </TouchableOpacity>
+              )}
+            </View>
           )}
           
           <PlayerAvatar
@@ -2618,6 +2635,18 @@ const styles = StyleSheet.create({
   },
   editIconButtonRight: {
     right: 0,
+  },
+  modalHeaderButtons: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    flexDirection: 'row',
+    gap: 8,
+    zIndex: 1,
+  },
+  chatIconButton: {
+    padding: 8,
+    borderRadius: 16,
   },
   avatar: {
     width: 80,

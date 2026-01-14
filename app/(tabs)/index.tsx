@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,11 +7,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ProfileScreen from '@/app/(tabs)/profil';
 import { AppBar } from '@/components/app-bar';
 import { AuthModal } from '@/components/auth-modal';
+import { PlayerChatModal } from '@/components/player-chat-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
+import { useNotifications } from '@/contexts/NotificationsContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { MatchDTO, PlayerDTO, WaitingListEntryDTO } from '@/types/api';
@@ -47,6 +49,7 @@ export default function HomeScreen() {
   const colors = Colors[colorScheme ?? 'light'];
   const router = useRouter();
   const { user, isAuthenticated } = useAuth();
+  const { notifications } = useNotifications();
   const insets = useSafeAreaInsets();
   
   const [loading, setLoading] = useState(true);
@@ -70,6 +73,8 @@ export default function HomeScreen() {
   const [showPlayerModal, setShowPlayerModal] = useState(false);
   const [showDelayConfirmModal, setShowDelayConfirmModal] = useState(false);
   const [pendingDelayMatchId, setPendingDelayMatchId] = useState<string | null>(null);
+  const [showChatModal, setShowChatModal] = useState(false);
+  const [selectedPlayerForChat, setSelectedPlayerForChat] = useState<{ id: string; name: string; matchId?: string } | null>(null);
   const [boxRanking, setBoxRanking] = useState<Array<{
     player: PlayerDTO;
     points: number;
@@ -949,114 +954,143 @@ export default function HomeScreen() {
 
             <View style={styles.matchesList}>
               {boxMatches.map((item, index) => {
-
-                
                 return (
-                <View key={item.match.id}>
                   <View
+                    key={item.match.id}
                     style={[
                       styles.matchItem,
                       index !== boxMatches.length - 1 && [
                         styles.matchItemBorder,
-                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
+                        { borderBottomColor: colors.text + '15', borderBottomWidth: 1 },
                       ],
                     ]}
                   >
-                    <TouchableOpacity 
-                      style={styles.matchItemLeft}
-                      onPress={() => {
-                        setSelectedPlayerId(item.opponent.id);
-                        setShowPlayerModal(true);
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
-                        <ThemedText style={styles.smallAvatarText}>
-                          {getInitials(item.opponent.first_name, item.opponent.last_name)}
-                        </ThemedText>
-                      </View>
-                      <View style={styles.matchItemInfo}>
-                        <ThemedText style={styles.matchOpponentName}>
-                          {item.opponent.first_name} {item.opponent.last_name}
-                        </ThemedText>
-                        {item.match.scheduled_at ? (() => {
-                          const date = new Date(item.match.scheduled_at);
-                          const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
-                          const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
-                          const day = days[date.getDay()];
-                          const month = months[date.getMonth()];
-                          const dayNumber = date.getDate();
-                          const hours = date.getHours().toString().padStart(2, '0');
-                          const minutes = date.getMinutes().toString().padStart(2, '0');
-                          return (
-                            <View style={styles.matchDateContainer}>
-                              <ThemedText style={[styles.matchDate, { color: colors.text }]}>
-                                {day} {dayNumber} {month}
-                              </ThemedText>
-                              <ThemedText style={[styles.matchTime, { color: colors.text, opacity: 0.5 }]}>
-                                {' • '}{hours}:{minutes}
-                              </ThemedText>
-                            </View>
-                          );
-                        })() : (
-                          <ThemedText style={[styles.matchDate, { color: colors.text, opacity: 0.5 }]}>
-                            Date non définie
+                    <View style={styles.matchItemContent}>
+                      <TouchableOpacity 
+                        style={styles.matchItemLeft}
+                        onPress={() => {
+                          setSelectedPlayerId(item.opponent.id);
+                          setShowPlayerModal(true);
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
+                          <ThemedText style={styles.smallAvatarText}>
+                            {getInitials(item.opponent.first_name, item.opponent.last_name)}
                           </ThemedText>
-                        )}
-                      </View>
-                  </TouchableOpacity>
-                  <View style={styles.matchItemRight}>
-                    {item.isCompleted ? (
-                      (() => {
-                        const isPlayerA = item.match.player_a_id === currentPlayer.id;
-                        const playerScore = isPlayerA ? item.match.score_a! : item.match.score_b!;
-                        const opponentScore = isPlayerA ? item.match.score_b! : item.match.score_a!;
-                        const isWin = playerScore > opponentScore;
-                        const specialStatus = getMatchSpecialStatus(item.match, currentPlayer.id, isWin);
-                        const scoreText = formatMatchScore(item.match, currentPlayer.id, playerScore, opponentScore);
-                        
-                        // Vérifier si le match a des points (a été joué)
-                        const hasPoints = (item.match.points_a !== null && item.match.points_a !== undefined) ||
-                                         (item.match.points_b !== null && item.match.points_b !== undefined);
-
-                        return (
-                          <View style={styles.scoreTagContainer}>
-                            <View
-                              style={[
-                                styles.scoreTag,
-                                { backgroundColor: specialStatus.backgroundColor },
-                              ]}
-                            >
-                              <ThemedText
-                                style={[
-                                  styles.scoreTagText,
-                                  { color: specialStatus.textColor },
-                                ]}
-                              >
-                                {scoreText}
-                              </ThemedText>
-                            </View>
-                          </View>
-                        );
-                      })()
-                      ) : (
-                        <View style={styles.matchItemRightContent}>
-                          {renderDelayButtonInline(item.match, item.opponent) && (
-                            <View style={styles.delayButtonWrapper}>
-                              {renderDelayButtonInline(item.match, item.opponent)}
-                            </View>
-                          )}
-                          <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
-                            <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
-                              À venir
+                        </View>
+                        <View style={styles.matchItemInfo}>
+                          <ThemedText style={styles.matchOpponentName}>
+                            {item.opponent.first_name} {item.opponent.last_name}
+                          </ThemedText>
+                          {item.match.scheduled_at ? (() => {
+                            const date = new Date(item.match.scheduled_at);
+                            const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+                            const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+                            const day = days[date.getDay()];
+                            const month = months[date.getMonth()];
+                            const dayNumber = date.getDate();
+                            const hours = date.getHours().toString().padStart(2, '0');
+                            const minutes = date.getMinutes().toString().padStart(2, '0');
+                            return (
+                              <View style={styles.matchDateContainer}>
+                                <ThemedText style={[styles.matchDate, { color: colors.text }]}>
+                                  {day} {dayNumber} {month}
+                                </ThemedText>
+                                <ThemedText style={[styles.matchTime, { color: colors.text, opacity: 0.5 }]}>
+                                  {' • '}{hours}:{minutes}
+                                </ThemedText>
+                              </View>
+                            );
+                          })() : (
+                            <ThemedText style={[styles.matchDate, { color: colors.text, opacity: 0.5 }]}>
+                              Date non définie
                             </ThemedText>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                      <View style={styles.matchItemRight}>
+                        <View style={styles.matchItemRightContent}>
+                          {item.isCompleted ? (
+                            (() => {
+                              const isPlayerA = item.match.player_a_id === currentPlayer.id;
+                              const playerScore = isPlayerA ? item.match.score_a! : item.match.score_b!;
+                              const opponentScore = isPlayerA ? item.match.score_b! : item.match.score_a!;
+                              const isWin = playerScore > opponentScore;
+                              const specialStatus = getMatchSpecialStatus(item.match, currentPlayer.id, isWin);
+                              const scoreText = formatMatchScore(item.match, currentPlayer.id, playerScore, opponentScore);
+                              
+                              // Vérifier si le match a des points (a été joué)
+                              const hasPoints = (item.match.points_a !== null && item.match.points_a !== undefined) ||
+                                               (item.match.points_b !== null && item.match.points_b !== undefined);
+
+                              return (
+                                <View style={styles.scoreTagContainer}>
+                                  <View
+                                    style={[
+                                      styles.scoreTag,
+                                      { backgroundColor: specialStatus.backgroundColor },
+                                    ]}
+                                  >
+                                    <ThemedText
+                                      style={[
+                                        styles.scoreTagText,
+                                        { color: specialStatus.textColor },
+                                      ]}
+                                    >
+                                      {scoreText}
+                                    </ThemedText>
+                                  </View>
+                                </View>
+                              );
+                            })()
+                            ) : (
+                              <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
+                                <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
+                                  À venir
+                                </ThemedText>
+                              </View>
+                            )}
+                          {/* Boutons d'action compacts */}
+                          <View style={styles.matchActionsCompact}>
+                            {(() => {
+                              // Vérifier s'il y a des messages non lus pour cette conversation
+                              const hasUnreadMessages = notifications.some(
+                                (notif) =>
+                                  !notif.read &&
+                                  notif.data?.entity_id === item.match.id
+                              );
+
+                              return (
+                                <TouchableOpacity
+                                  onPress={() => {
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    setSelectedPlayerForChat({
+                                      id: item.opponent.id,
+                                      name: `${item.opponent.first_name} ${item.opponent.last_name}`,
+                                      matchId: item.match.id,
+                                    });
+                                    setShowChatModal(true);
+                                  }}
+                                  style={styles.matchActionIconButton}
+                                  activeOpacity={0.7}
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                >
+                                  <View style={styles.chatButtonContainer}>
+                                    <IconSymbol name="bubble.left.and.bubble.right.fill" size={18} color={colors.text + 'CC'} />
+                                    {hasUnreadMessages && (
+                                      <View style={[styles.unreadBadge, { backgroundColor: '#ef4444' }]} />
+                                    )}
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })()}
                           </View>
                         </View>
-                      )}
+                      </View>
+                    </View>
                   </View>
-                </View>
-                </View>
                 );
               })}
             </View>
@@ -1281,6 +1315,27 @@ export default function HomeScreen() {
           onClose={() => {
             setShowPlayerModal(false);
             setSelectedPlayerId(null);
+          }}
+          onStartChat={(playerId: string, playerName: string) => {
+            setShowPlayerModal(false);
+            setSelectedPlayerId(null);
+            setSelectedPlayerForChat({ id: playerId, name: playerName });
+            setShowChatModal(true);
+          }}
+        />
+      )}
+
+      {/* Modal Chat Joueur */}
+      {showChatModal && selectedPlayerForChat && user && (
+        <PlayerChatModal
+          visible={showChatModal}
+          currentPlayerId={user.id}
+          otherPlayerId={selectedPlayerForChat.id}
+          otherPlayerName={selectedPlayerForChat.name}
+          matchId={selectedPlayerForChat.matchId || undefined}
+          onClose={() => {
+            setShowChatModal(false);
+            setSelectedPlayerForChat(null);
           }}
         />
       )}
@@ -1745,10 +1800,12 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   matchItem: {
+    paddingVertical: 12,
+  },
+  matchItemContent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
   },
   matchItemBorder: {
     borderBottomWidth: 1,
@@ -1757,6 +1814,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    gap: 10,
   },
   smallAvatar: {
     width: 32,
@@ -1790,6 +1848,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  matchActionsCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  matchActionIconButton: {
+    padding: 6,
+    borderRadius: 8,
+  },
+  chatButtonContainer: {
+    position: 'relative',
+  },
+  unreadBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#fff',
   },
   delayButtonWrapper: {
     marginLeft: 4,
