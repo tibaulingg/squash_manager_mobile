@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AppBar } from '@/components/app-bar';
 import { AuthModal } from '@/components/auth-modal';
 import { PlayerAvatar } from '@/components/player-avatar';
 import { EditProfileForm } from '@/components/profile/edit-profile-form';
@@ -23,14 +24,13 @@ import { formatMatchScore, getMatchSpecialStatus, isSpecialCaseMatch } from '@/u
 const AVATAR_COLOR = '#9ca3af';
 
 const REACTIONS = [
+  { emoji: '❤️', name: 'heart' },
   { emoji: '🔥', name: 'fire' },
   { emoji: '👏', name: 'clap' },
-  { emoji: '💪', name: 'muscle' },
-  { emoji: '🎉', name: 'party' },
+  { emoji: '👍', name: 'thumbs_up' },
+  { emoji: '👎', name: 'thumbs_down' },
   { emoji: '😢', name: 'sad' },
-  { emoji: '❤️', name: 'heart' },
 ];
-
 const getInitials = (name: string): string => {
   const parts = name.split(' ');
   if (parts.length >= 2) {
@@ -159,7 +159,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     if (!user || !currentPlayer || currentPlayer.id === user.id) return;
     
     // Trouver le joueur actuel (celui qui est connecté)
-    const players = await api.getPlayers();
+    const players = await api.getPlayersCached();
     const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
     if (!currentUserPlayer) {
       Alert.alert('Erreur', 'Joueur non trouvé');
@@ -174,7 +174,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
         await api.unfollowPlayer(currentPlayer.id, currentUserPlayer.id);
         setIsFollowing(false);
         // Mettre à jour la liste des joueurs suivis si on est sur notre propre profil
-        if (!isModal) {
+        if (currentPlayer.id === user.id) {
           const following = await api.getFollowing(currentUserPlayer.id);
           setFollowingPlayers(following);
         }
@@ -182,7 +182,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
         await api.followPlayer(currentPlayer.id, currentUserPlayer.id);
         setIsFollowing(true);
         // Mettre à jour la liste des joueurs suivis si on est sur notre propre profil
-        if (!isModal) {
+        if (currentPlayer.id === user.id) {
           const following = await api.getFollowing(currentUserPlayer.id);
           setFollowingPlayers(following);
         }
@@ -221,7 +221,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     if (isModal && playerId) {
       try {
         setLoading(true);
-        const players = await api.getPlayers();
+        const players = await api.getPlayersCached();
         const player = players.find((p) => p.id === playerId);
         if (!player) {
           setLoading(false);
@@ -246,7 +246,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       setLoading(true);
       
       // 1. Trouver le joueur
-      const players = await api.getPlayers();
+      const players = await api.getPlayersCached();
       let player: PlayerDTO | undefined;
       
       if (isModal && playerId) {
@@ -262,14 +262,12 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       
       setCurrentPlayer(player);
       
-      // Si c'est un autre joueur (modal), vérifier le statut de suivi
-      if (isModal && playerId && playerId !== user?.id && user) {
+      // Si c'est un autre joueur (pas le joueur connecté), vérifier le statut de suivi
+      const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user?.email.toLowerCase());
+      if (user && player && player.id !== user.id && currentUserPlayer) {
         try {
-          const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
-          if (currentUserPlayer) {
-            const followStatus = await api.getFollowStatus(currentUserPlayer.id, playerId);
-            setIsFollowing(followStatus.isFollowing);
-          }
+          const followStatus = await api.getFollowStatus(currentUserPlayer.id, player.id);
+          setIsFollowing(followStatus.isFollowing);
         } catch (error) {
           console.error('Erreur chargement statut follow:', error);
           setIsFollowing(false);
@@ -277,17 +275,15 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       }
       
       // Si c'est le profil de l'utilisateur connecté, charger les joueurs suivis et followers
-      if (!isModal && user && player) {
+      if (user && player && player.id === user.id && currentUserPlayer) {
         try {
-          const currentUserPlayer = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
-          if (currentUserPlayer && player.id === currentUserPlayer.id) {
-            const following = await api.getFollowing(player.id);
-            setFollowingPlayers(following);
-            // TODO: Charger les followers quand l'API sera disponible
-            // const followers = await api.getFollowers(player.id);
-            // setFollowersPlayers(followers);
-          } else {
-            setFollowingPlayers([]);
+          const following = await api.getFollowing(player.id);
+          setFollowingPlayers(following);
+          try {
+            const followers = await api.getFollowers(player.id);
+            setFollowersPlayers(followers);
+          } catch (error) {
+            console.error('Erreur chargement followers:', error);
             setFollowersPlayers([]);
           }
         } catch (error) {
@@ -541,7 +537,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       // 4. Position dans le classement (calculer depuis le ranking)
       let rankingPosition = 0;
       try {
-        const allPlayers = await api.getPlayers();
+        const allPlayers = await api.getPlayersCached();
         // Calculer les points de tous les joueurs pour l'année en cours
         const playerRankings = await Promise.all(
           allPlayers.map(async (p) => {
@@ -685,17 +681,19 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
       
       setRecentMatches(history);
       
-      // Charger les réactions et commentaires pour tous les matchs
+      // Charger les réactions et commentaires pour tous les matchs (API unifiée)
       if (history.length > 0 && player) {
         const matchIds = history.map(m => m.matchData.id);
         try {
-          const reactionsData = await api.getMatchReactions(matchIds, player.id);
+          // Utiliser l'API unifiée pour les réactions
+          const entities = matchIds.map(id => ({ type: 'match' as const, id }));
+          const reactionsData = await api.getReactions(entities, player.id);
           const reactionsMap: { [matchId: string]: { [reaction: string]: number } } = {};
           const userReactionsMap: { [matchId: string]: string | null } = {};
           
-          Object.entries(reactionsData).forEach(([matchId, data]) => {
-            reactionsMap[matchId] = data.reactions || {};
-            userReactionsMap[matchId] = data.userReaction || null;
+          Object.entries(reactionsData).forEach(([entityId, data]) => {
+            reactionsMap[entityId] = data.reactions || {};
+            userReactionsMap[entityId] = data.userReaction || null;
           });
           
           setMatchReactions(reactionsMap);
@@ -704,9 +702,10 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           console.error('Erreur chargement réactions:', error);
         }
         
-        // Charger les commentaires en batch pour avoir les compteurs
+        // Charger les commentaires en batch pour avoir les compteurs (API unifiée)
         try {
-          const commentsData = await api.getMatchCommentsBatch(matchIds, player.id);
+          const entities = matchIds.map(id => ({ type: 'match' as const, id }));
+          const commentsData = await api.getCommentsBatch(entities, player.id);
           setMatchComments(commentsData);
         } catch (error) {
           console.error('Erreur chargement commentaires:', error);
@@ -745,7 +744,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
   };
 
   const handleUpdateNextBoxStatus = async (status: string | null) => {
-    if (!currentPlayer || isModal) return; // Pas de modification en mode modal
+    if (!currentPlayer || !user || currentPlayer.id !== user.id) return; // Seulement pour le joueur connecté
     
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     
@@ -781,7 +780,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
   };
 
   const handleEditProfile = () => {
-    if (!currentPlayer || isModal) return; // Pas d'édition en mode modal
+    if (!currentPlayer || !user || currentPlayer.id !== user.id) return; // Seulement pour le joueur connecté
     
     setEditForm({
       email: currentPlayer.email || '',
@@ -900,7 +899,8 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     }
     
     try {
-      await api.reactToMatch(matchId, currentPlayer.id, newReaction);
+      // Utiliser l'API unifiée pour les réactions
+      await api.reactToEntity('match', matchId, currentPlayer.id, newReaction);
       
       setUserReactions(prev => ({
         ...prev,
@@ -950,14 +950,15 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     setPostingComment(prev => new Set(prev).add(matchId));
 
     try {
-      await api.addMatchComment(matchId, currentPlayer.id, text);
+      // Utiliser l'API unifiée pour les commentaires
+      await api.addComment('match', matchId, currentPlayer.id, text);
       setCommentTexts(prev => {
         const next = { ...prev };
         delete next[matchId];
         return next;
       });
       
-      const comments = await api.getMatchComments(matchId);
+      const comments = await api.getComments('match', matchId);
       setMatchComments(prev => ({ ...prev, [matchId]: comments }));
       
       // Ne pas fermer le panneau de commentaires pour voir le nouveau commentaire
@@ -975,7 +976,8 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
 
   const handleLoadComments = async (matchId: string) => {
     try {
-      const comments = await api.getMatchComments(matchId);
+      // Utiliser l'API unifiée pour les commentaires
+      const comments = await api.getComments('match', matchId);
       setMatchComments(prev => ({ ...prev, [matchId]: comments }));
       return comments;
     } catch (error) {
@@ -988,7 +990,8 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
     if (!currentPlayer) return;
     
     try {
-      await api.deleteMatchComment(commentId, currentPlayer.id);
+      // Utiliser l'API unifiée pour les commentaires
+      await api.deleteComment(commentId, currentPlayer.id);
       
       // Mettre à jour les commentaires locaux
       setMatchComments(prev => ({
@@ -1050,12 +1053,13 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
   if (!isModal && !isAuthenticated) {
     return (
       <ThemedView style={styles.container}>
+        <AppBar />
         <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: Math.max(insets.top, 20) + 8 },
+            { paddingTop: 20 },
           ]}
           showsVerticalScrollIndicator={false}
         >
@@ -1131,6 +1135,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
   // Contenu du profil
   const profileContent = (
     <>
+      {!isModal && <AppBar />}
       <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -1144,9 +1149,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
-            isModal 
-              ? { paddingTop: 20 }
-              : { paddingTop: Math.max(insets.top, 20) + 8 },
+            { paddingTop: isModal ? 20 : 20 },
           ]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -1162,9 +1165,9 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
         >
           {/* Header avec profil */}
           <View style={[styles.profileHeader, isModal && styles.profileHeaderModal]}>
-          {!isModal && (
+          {user && currentPlayer && user.id === currentPlayer.id && (
             <TouchableOpacity
-              style={[styles.editIconButton, { backgroundColor: colors.text + '08' }]}
+              style={[styles.editIconButton, styles.editIconButtonLeft, { backgroundColor: colors.text + '08' }]}
               onPress={handleEditProfile}
               activeOpacity={0.7}
             >
@@ -1173,7 +1176,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           )}
           {isModal && onClose && (
             <TouchableOpacity
-              style={[styles.editIconButton, { backgroundColor: colors.text + '08' }]}
+              style={[styles.editIconButton, styles.editIconButtonRight, { backgroundColor: colors.text + '08' }]}
               onPress={onClose}
               activeOpacity={0.7}
             >
@@ -1283,7 +1286,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
         )}
 
         {/* Next Box Status - uniquement pour l'utilisateur actuel */}
-        {!isModal && currentPlayer?.current_box && user && currentPlayer.id === user.id && (
+        {currentPlayer?.current_box && user && currentPlayer.id === user.id && (
           <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <View style={styles.sectionTitleContainer}>
               <IconSymbol name="square.grid.2x2.fill" size={18} color={colors.text + '80'} />
@@ -1302,10 +1305,11 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       { backgroundColor: '#10b981' + '20', borderColor: '#10b981' },
                     ],
                     { borderColor: colors.text + '20' },
+                    (!user || currentPlayer.id !== user.id) && styles.statusButtonReadonly,
                   ]}
-                  onPress={() => handleUpdateNextBoxStatus('continue')}
-                  disabled={updatingStatus}
-                  activeOpacity={0.7}
+                  onPress={(!user || currentPlayer.id !== user.id) ? undefined : () => handleUpdateNextBoxStatus('continue')}
+                  disabled={(!user || currentPlayer.id !== user.id) || updatingStatus}
+                  activeOpacity={(!user || currentPlayer.id !== user.id) ? 1 : 0.7}
                 >
                   <IconSymbol 
                     name="checkmark.circle.fill" 
@@ -1330,11 +1334,11 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       { backgroundColor: '#ef4444' + '20', borderColor: '#ef4444' },
                     ],
                     { borderColor: colors.text + '20' },
-                    isModal && styles.statusButtonReadonly,
+                    (!user || currentPlayer.id !== user.id) && styles.statusButtonReadonly,
                   ]}
-                  onPress={isModal ? undefined : () => handleUpdateNextBoxStatus('stop')}
-                  disabled={isModal || updatingStatus}
-                  activeOpacity={isModal ? 1 : 0.7}
+                  onPress={(!user || currentPlayer.id !== user.id) ? undefined : () => handleUpdateNextBoxStatus('stop')}
+                  disabled={(!user || currentPlayer.id !== user.id) || updatingStatus}
+                  activeOpacity={(!user || currentPlayer.id !== user.id) ? 1 : 0.7}
                 >
                   <IconSymbol 
                     name="xmark.circle.fill" 
@@ -1359,10 +1363,11 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                       { backgroundColor: colors.text + '10', borderColor: colors.text + '30' },
                     ],
                     { borderColor: colors.text + '20' },
+                    (!user || currentPlayer.id !== user.id) && styles.statusButtonReadonly,
                   ]}
-                  onPress={() => handleUpdateNextBoxStatus(null)}
-                  disabled={updatingStatus}
-                  activeOpacity={0.7}
+                  onPress={(!user || currentPlayer.id !== user.id) ? undefined : () => handleUpdateNextBoxStatus(null)}
+                  disabled={(!user || currentPlayer.id !== user.id) || updatingStatus}
+                  activeOpacity={(!user || currentPlayer.id !== user.id) ? 1 : 0.7}
                 >
                   <IconSymbol 
                     name="questionmark.circle.fill" 
@@ -1480,7 +1485,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
               <TouchableOpacity
                 style={[styles.streakCard, { backgroundColor: '#10b981' + '10', borderColor: '#10b981' + '30', flex: 1 }]}
                 onPress={async () => {
-                  const players = await api.getPlayers();
+                  const players = await api.getPlayersCached();
                   openMatchDetailsModal(
                     `Meilleure série de victoires (${advancedStats.bestStreak.count})`,
                     advancedStats.bestStreak.matches,
@@ -1505,7 +1510,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
               <TouchableOpacity
                 style={[styles.streakCard, { backgroundColor: '#ef4444' + '10', borderColor: '#ef4444' + '30', flex: 1 }]}
                 onPress={async () => {
-                  const players = await api.getPlayers();
+                  const players = await api.getPlayersCached();
                   openMatchDetailsModal(
                     `Pire série de défaites (${advancedStats.worstStreak.count})`,
                     advancedStats.worstStreak.matches,
@@ -1554,7 +1559,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                 <TouchableOpacity
                   style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: PRIMARY_COLOR + '30', flex: 1 }]}
                   onPress={async () => {
-                    const players = await api.getPlayers();
+                    const players = await api.getPlayersCached();
                     openMatchDetailsModal(
                       `Matchs contre ${advancedStats.rival.name}`,
                       advancedStats.rival.matchList,
@@ -1621,7 +1626,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                 <TouchableOpacity
                   style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: '#10b981' + '30', flex: 1 }]}
                   onPress={async () => {
-                    const players = await api.getPlayers();
+                    const players = await api.getPlayersCached();
                     openMatchDetailsModal(
                       `Matchs contre ${advancedStats.bestOpponent.name}`,
                       advancedStats.bestOpponent.matchList,
@@ -1689,7 +1694,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
                 <TouchableOpacity
                   style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: '#ef4444' + '30', flex: 1 }]}
                   onPress={async () => {
-                    const players = await api.getPlayers();
+                    const players = await api.getPlayersCached();
                     openMatchDetailsModal(
                       `Matchs contre ${advancedStats.worstOpponent.name}`,
                       advancedStats.worstOpponent.matchList,
@@ -2286,7 +2291,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
         )}
 
         {/* Suivis - uniquement dans le profil de l'utilisateur connecté */}
-        {!isModal && currentPlayer && user && currentPlayer.id === user.id && (
+        {currentPlayer && user && currentPlayer.id === user.id && (
           <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <View style={styles.sectionTitleContainer}>
               <IconSymbol name="square.and.arrow.up" size={18} color={colors.text + '80'} />
@@ -2326,22 +2331,24 @@ export default function ProfileScreen({ isModal = false, playerId, onClose }: Pr
           </View>
         )}
 
-        {/* Se déconnecter */}
-        <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-          <TouchableOpacity
-            style={[styles.logoutButton, { backgroundColor: '#ef4444' + '15' }]}
-            onPress={handleLogout}
-            activeOpacity={0.7}
-          >
-            <View style={styles.logoutButtonLeft}>
-              <IconSymbol name="arrow.right.square.fill" size={20} color="#ef4444" />
-              <ThemedText style={[styles.logoutButtonText, { color: '#ef4444' }]}>
-                Se déconnecter
-              </ThemedText>
-            </View>
-            <IconSymbol name="chevron.right" size={16} color="#ef4444" />
-          </TouchableOpacity>
-        </View>
+        {/* Se déconnecter - seulement pour le joueur connecté */}
+        {currentPlayer && user && currentPlayer.id === user.id && (
+          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <TouchableOpacity
+              style={[styles.logoutButton, { backgroundColor: '#ef4444' + '15' }]}
+              onPress={handleLogout}
+              activeOpacity={0.7}
+            >
+              <View style={styles.logoutButtonLeft}>
+                <IconSymbol name="arrow.right.square.fill" size={20} color="#ef4444" />
+                <ThemedText style={[styles.logoutButtonText, { color: '#ef4444' }]}>
+                  Se déconnecter
+                </ThemedText>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color="#ef4444" />
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={{ height: 40 }} />
         </ScrollView>
@@ -2613,10 +2620,15 @@ const styles = StyleSheet.create({
   editIconButton: {
     position: 'absolute',
     top: 0,
-    right: 0,
     borderRadius: 16,
     padding: 8,
     zIndex: 1,
+  },
+  editIconButtonLeft: {
+    left: 0,
+  },
+  editIconButtonRight: {
+    right: 0,
   },
   avatar: {
     width: 80,

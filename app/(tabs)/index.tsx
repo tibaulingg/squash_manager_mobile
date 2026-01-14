@@ -1,11 +1,11 @@
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Linking, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Linking, Modal, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ProfileScreen from '@/app/(tabs)/profil';
-import { ActivityFeed } from '@/components/activity-feed';
+import { AppBar } from '@/components/app-bar';
 import { AuthModal } from '@/components/auth-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -68,12 +68,8 @@ export default function HomeScreen() {
   const [allPlayers, setAllPlayers] = useState<PlayerDTO[]>([]);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [showPlayerModal, setShowPlayerModal] = useState(false);
-  const [followedPlayersMatches, setFollowedPlayersMatches] = useState<any[]>([]);
-  const [followedPlayers, setFollowedPlayers] = useState<string[]>([]); // IDs des joueurs suivis
-  const [matchReactions, setMatchReactions] = useState<{ [matchId: string]: { [reaction: string]: number } }>({});
-  const [userReactions, setUserReactions] = useState<{ [matchId: string]: string | null }>({});
-  const [matchComments, setMatchComments] = useState<{ [matchId: string]: any[] }>({});
-  const isLoadingFollowedPlayersRef = useRef(false);
+  const [showDelayConfirmModal, setShowDelayConfirmModal] = useState(false);
+  const [pendingDelayMatchId, setPendingDelayMatchId] = useState<string | null>(null);
   const [boxRanking, setBoxRanking] = useState<Array<{
     player: PlayerDTO;
     points: number;
@@ -95,7 +91,7 @@ export default function HomeScreen() {
       }
       
       // 1. Trouver le joueur par email
-      const players = await api.getPlayers();
+      const players = await api.getPlayersCached(refreshing);
       setAllPlayers(players); // Sauvegarder tous les joueurs
       const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
       
@@ -256,7 +252,7 @@ export default function HomeScreen() {
             ...item,
             position: index + 1,
           }))
-          .slice(0, 5); // Top 5 seulement
+          .slice(0, 6); // Top 5 seulement
         
         setBoxRanking(ranking);
       } else {
@@ -286,148 +282,21 @@ export default function HomeScreen() {
     }
   }, [user, refreshing]);
 
-  // Charger la liste des joueurs suivis et leurs matchs
-  const loadFollowedPlayers = useCallback(async () => {
-    if (!currentPlayer?.id) {
-      setFollowedPlayers([]);
-      setFollowedPlayersMatches([]);
-      return;
-    }
-    
-    // Éviter les appels multiples simultanés
-    if (isLoadingFollowedPlayersRef.current) {
-      return;
-    }
-    
-    isLoadingFollowedPlayersRef.current = true;
-    
-    try {
-      // Récupérer les joueurs suivis
-      const following = await api.getFollowing(currentPlayer.id);
-      const followedIds = following.map(p => p.id);
-      setFollowedPlayers(followedIds);
-      
-      // Si aucun joueur suivi, vider les matchs
-      if (followedIds.length === 0) {
-        setFollowedPlayersMatches([]);
-        return;
-      }
-      
-      // Récupérer les matchs des joueurs suivis
-      const matches = await api.getFollowedPlayersMatches(currentPlayer.id, 50);
-      
-      // Filtrer les matchs : seulement ceux des 7 derniers jours avec résultats valides
-      const oneWeekAgo = new Date();
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      
-      const validMatches = matches.filter((match) => {
-        // Vérifier que le match a été joué (played_at existe)
-        if (!match.played_at) return false;
-        
-        const playedDate = new Date(match.played_at);
-        // Vérifier que c'est dans les 7 derniers jours
-        if (playedDate < oneWeekAgo) return false;
-        
-        // Vérifier que le match a un résultat valide (pas 0-0, pas de cas spéciaux)
-        const hasValidScore = match.score_a !== null && match.score_b !== null &&
-                             !(match.score_a === 0 && match.score_b === 0);
-        const hasSpecialStatus = !!(match.no_show_player_id || match.retired_player_id || match.delayed_player_id);
-        
-        // Inclure seulement les matchs avec score valide et sans statut spécial
-        return hasValidScore && !hasSpecialStatus;
-      });
-      
-      const players = await api.getPlayers();
-      
-      // Charger les réactions pour tous les matchs valides
-      if (validMatches.length > 0) {
-        try {
-          const matchIds = validMatches.map(m => m.id);
-          const reactionsData = await api.getMatchReactions(matchIds, currentPlayer.id);
-
-          // Transformer les données de réactions
-          const reactionsMap: { [matchId: string]: { [reaction: string]: number } } = {};
-          const userReactionsMap: { [matchId: string]: string | null } = {};
-          
-          Object.entries(reactionsData).forEach(([matchId, data]) => {
-            reactionsMap[matchId] = data.reactions || {};
-            userReactionsMap[matchId] = data.userReaction || null;
-          });
-          
-          setMatchReactions(reactionsMap);
-          setUserReactions(userReactionsMap);
-        } catch (error) {
-          console.error('Erreur chargement réactions:', error);
-        }
-      }
-      
-      // Transformer les matchs pour l'ActivityFeed
-      const feedItems = validMatches.map((match) => {
-        const playerA = players.find(p => p.id === match.player_a_id);
-        const playerB = players.find(p => p.id === match.player_b_id);
-        
-        if (!playerA || !playerB) return null;
-        
-        // Déterminer qui a joué ce match (le joueur suivi)
-        const playedBy = followedIds.includes(match.player_a_id) ? playerA : playerB;
-        
-        // Déterminer si c'est un cas spécial
-        const isWin = playedBy.id === match.player_a_id 
-          ? (match.score_a !== null && match.score_b !== null && match.score_a > match.score_b)
-          : (match.score_a !== null && match.score_b !== null && match.score_b > match.score_a);
-        const specialStatus = getMatchSpecialStatus(match, playedBy.id, isWin);
-        const isSpecialCase = !!(match.no_show_player_id || match.retired_player_id || match.delayed_player_id);
-        
-        return {
-          match,
-          playerA,
-          playerB,
-          playerAScore: match.score_a,
-          playerBScore: match.score_b,
-          isSpecialCase,
-          specialStatus,
-          playedBy,
-          playedAt: match.scheduled_at ? new Date(match.scheduled_at) : (match.played_at ? new Date(match.played_at) : new Date()),
-        };
-      }).filter((item): item is NonNullable<typeof item> => item !== null);
-      
-      setFollowedPlayersMatches(feedItems);
-    } catch (error: any) {
-      console.error('Erreur chargement joueurs suivis:', error);
-      // Ne pas vider les états en cas d'erreur pour éviter les boucles
-      // Si l'API n'est pas encore implémentée, on ignore silencieusement
-      if (error.message?.includes('404') || error.message?.includes('Not Found')) {
-        console.log('Endpoint getFollowing non implémenté, ignoré');
-        setFollowedPlayers([]);
-        setFollowedPlayersMatches([]);
-      }
-    } finally {
-      isLoadingFollowedPlayersRef.current = false;
-    }
-  }, [currentPlayer?.id]);
-
   useEffect(() => {
     loadData();
   }, [loadData]);
-
-  useEffect(() => {
-    if (currentPlayer?.id) {
-      loadFollowedPlayers();
-    }
-  }, [currentPlayer?.id, loadFollowedPlayers]);
 
   // Recharger les données quand on revient sur l'onglet
   useFocusEffect(
     useCallback(() => {
       loadData();
-      loadFollowedPlayers();
-    }, [loadData, loadFollowedPlayers])
+    }, [loadData])
   );
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
-    await Promise.all([loadData(), loadFollowedPlayers()]);
+    await loadData();
   };
 
   const handleCall = async (phone: string) => {
@@ -451,99 +320,6 @@ export default function HomeScreen() {
     router.push('/(tabs)/box');
   };
 
-  const handleReaction = async (matchId: string, reaction: string) => {
-    if (!currentPlayer) return;
-    
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    try {
-      // Toggle reaction: si déjà réagi avec cette réaction, la retirer, sinon l'ajouter
-      const currentReaction = userReactions[matchId];
-      const newReaction = currentReaction === reaction ? null : reaction;
-      
-      // Appel API pour sauvegarder la réaction
-      await api.reactToMatch(matchId, currentPlayer.id, newReaction);
-      
-      // Mise à jour locale optimiste
-      setUserReactions(prev => ({
-        ...prev,
-        [matchId]: newReaction,
-      }));
-      
-      setMatchReactions(prev => {
-        const current = prev[matchId] || {};
-        const newCounts = { ...current };
-        
-        // Retirer l'ancienne réaction
-        if (currentReaction && newCounts[currentReaction]) {
-          newCounts[currentReaction] = Math.max(0, newCounts[currentReaction] - 1);
-          if (newCounts[currentReaction] === 0) {
-            delete newCounts[currentReaction];
-          }
-        }
-        
-        // Ajouter la nouvelle réaction
-        if (newReaction) {
-          newCounts[newReaction] = (newCounts[newReaction] || 0) + 1;
-        }
-        
-        return {
-          ...prev,
-          [matchId]: newCounts,
-        };
-      });
-      
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error: any) {
-      console.error('Erreur réaction:', error);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', error.message || 'Impossible d\'ajouter la réaction');
-    }
-  };
-
-  const handleComment = async (matchId: string, text: string) => {
-    if (!currentPlayer) return;
-    
-    try {
-      const comment = await api.addMatchComment(matchId, currentPlayer.id, text);
-      
-      // Mettre à jour les commentaires locaux
-      setMatchComments(prev => ({
-        ...prev,
-        [matchId]: [...(prev[matchId] || []), comment],
-      }));
-    } catch (error: any) {
-      console.error('Erreur commentaire:', error);
-      throw error;
-    }
-  };
-
-  const handleLoadComments = async (matchId: string) => {
-    try {
-      return await api.getMatchComments(matchId);
-    } catch (error: any) {
-      console.error('Erreur chargement commentaires:', error);
-      // En cas d'erreur, retourner les commentaires locaux s'ils existent
-      return matchComments[matchId] || [];
-    }
-  };
-
-  const handleDeleteComment = async (commentId: string, matchId: string) => {
-    if (!currentPlayer) return;
-    
-    try {
-      await api.deleteMatchComment(commentId, currentPlayer.id);
-      
-      // Mettre à jour les commentaires locaux
-      setMatchComments(prev => ({
-        ...prev,
-        [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
-      }));
-    } catch (error: any) {
-      console.error('Erreur suppression commentaire:', error);
-      Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
-    }
-  };
 
   const handleRequestDelay = async (matchId: string) => {
     if (!currentPlayer) return;
@@ -559,6 +335,21 @@ export default function HomeScreen() {
       console.error('Erreur demande report:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Erreur', error.message || 'Impossible d\'envoyer la demande de report');
+    } finally {
+      setShowDelayConfirmModal(false);
+      setPendingDelayMatchId(null);
+    }
+  };
+
+  const handleRequestDelayPress = (matchId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPendingDelayMatchId(matchId);
+    setShowDelayConfirmModal(true);
+  };
+
+  const confirmRequestDelay = () => {
+    if (pendingDelayMatchId) {
+      handleRequestDelay(pendingDelayMatchId);
     }
   };
 
@@ -752,14 +543,12 @@ export default function HomeScreen() {
     if (canRequestDelay && isMatchNotPlayed) {
       return (
         <TouchableOpacity
-          style={[styles.delayButtonSmall, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}
-          onPress={() => handleRequestDelay(match.id)}
-          activeOpacity={0.7}
+          style={styles.delayButtonIconOnly}
+          onPress={() => handleRequestDelayPress(match.id)}
+          activeOpacity={0.6}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <IconSymbol name="calendar.badge.exclamationmark" size={12} color={colors.text + '80'} />
-          <ThemedText style={[styles.delayButtonTextSmall, { color: colors.text + '80' }]}>
-            Reporter
-          </ThemedText>
+          <IconSymbol name="calendar.badge.exclamationmark" size={14} color="#f59e0b" />
         </TouchableOpacity>
       );
     }
@@ -800,28 +589,16 @@ export default function HomeScreen() {
           <ThemedText style={[styles.delayRequestText, { color: colors.text, opacity: 0.7 }]}>
             {opponent.first_name} a demandé un report
           </ThemedText>
-          <View style={styles.delayButtonsRow}>
-            <TouchableOpacity
-              style={[styles.delayButton, styles.delayButtonAccept, { backgroundColor: '#10b981' + '15', borderColor: '#10b981' + '40' }]}
-              onPress={() => handleAcceptDelay(match.id)}
-              activeOpacity={0.7}
-            >
-              <IconSymbol name="checkmark.circle.fill" size={16} color="#10b981" />
-              <ThemedText style={[styles.delayButtonText, { color: '#10b981' }]}>
-                Accepter
-              </ThemedText>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.delayButton, styles.delayButtonReject, { backgroundColor: '#ef4444' + '15', borderColor: '#ef4444' + '40' }]}
-              onPress={() => handleRejectDelay(match.id)}
-              activeOpacity={0.7}
-            >
-              <IconSymbol name="xmark.circle.fill" size={16} color="#ef4444" />
-              <ThemedText style={[styles.delayButtonText, { color: '#ef4444' }]}>
-                Refuser
-              </ThemedText>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[styles.delayButton, styles.delayButtonAccept, { backgroundColor: '#10b981' + '15', borderColor: '#10b981' + '40' }]}
+            onPress={() => handleAcceptDelay(match.id)}
+            activeOpacity={0.7}
+          >
+            <IconSymbol name="checkmark.circle.fill" size={16} color="#10b981" />
+            <ThemedText style={[styles.delayButtonText, { color: '#10b981' }]}>
+              Accepter
+            </ThemedText>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -897,44 +674,17 @@ export default function HomeScreen() {
   if (!isAuthenticated) {
     return (
       <ThemedView style={styles.container}>
+        <AppBar />
         <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: insets.top + 10, paddingBottom: 60 },
+            { paddingTop: insets.top - 30, paddingBottom: 30 },
           ]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Hero Section */}
-          <View style={styles.heroSection}>
-            <View style={styles.logoContainer}>
-              <Image
-                source={require('@/favicon-logo-header.png')}
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
-            </View>
-            <ThemedText style={styles.heroTitle}>Squash 22</ThemedText>
-            <ThemedText style={[styles.heroSubtitle, { color: colors.text + '70' }]}>
-              Lundi des box
-            </ThemedText>
-          </View>
 
-          {/* CTA Principal */}
-          <View style={styles.ctaSection}>
-            <TouchableOpacity
-              style={[styles.primaryButton, { backgroundColor: PRIMARY_COLOR }]}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                setShowAuthModal(true);
-              }}
-              activeOpacity={0.8}
-            >
-              <ThemedText style={styles.primaryButtonText}>S'identifier</ThemedText>
-              <IconSymbol name="arrow.right.circle.fill" size={24} color="#000" />
-            </TouchableOpacity>
-          </View>
 
           {/* Features Grid */}
           <View style={styles.featuresGrid}>
@@ -996,9 +746,10 @@ export default function HomeScreen() {
 
   // Vue file d'attente (connecté sans membership)
   if (isAuthenticated && currentPlayer && !currentPlayer.current_box) {
-    return (
-      <ThemedView style={styles.container}>
-        <ScrollView
+  return (
+    <ThemedView style={styles.container}>
+      <AppBar />
+      <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
@@ -1160,12 +911,13 @@ export default function HomeScreen() {
   // Vue connectée (personnalisée)
   return (
     <ThemedView style={styles.container}>
+      <AppBar />
       <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: Math.max(insets.top, 20) + 20 },
+          { paddingTop: 20 },
         ]}
         showsVerticalScrollIndicator={false}
           refreshControl={
@@ -1177,85 +929,13 @@ export default function HomeScreen() {
             />
           }
       >
-        {/* Header d'accueil */}
-        {currentPlayer && (
-          <View style={[styles.welcomeHeader, { backgroundColor: colors.background }]}>
-            <View style={styles.welcomeRow}>
-              <ThemedText style={styles.welcomeGreeting}>
-                Bonjour, {currentPlayer.first_name} 👋
-              </ThemedText>
-              
-              {/* Chip réinscrit à droite */}
-              {currentPlayer.current_box && (
-                <View
-                  style={[
-                    styles.statusPill,
-                    {
-                      backgroundColor:
-                        currentPlayer.current_box.next_box_status === 'continue'
-                          ? '#10b981' + '20'
-                          : currentPlayer.current_box.next_box_status === 'stop'
-                          ? '#ef4444' + '20'
-                          : colors.text + '10',
-                      borderWidth: 1,
-                      borderColor:
-                        currentPlayer.current_box.next_box_status === 'continue'
-                          ? '#10b981'
-                          : currentPlayer.current_box.next_box_status === 'stop'
-                          ? '#ef4444'
-                          : colors.text + '30',
-                    },
-                  ]}
-                >
-                  <IconSymbol
-                    name={
-                      currentPlayer.current_box.next_box_status === 'continue'
-                        ? 'checkmark.circle.fill'
-                        : currentPlayer.current_box.next_box_status === 'stop'
-                        ? 'xmark.circle.fill'
-                        : 'questionmark.circle.fill'
-                    }
-                    size={12}
-                    color={
-                      currentPlayer.current_box.next_box_status === 'continue'
-                        ? '#10b981'
-                        : currentPlayer.current_box.next_box_status === 'stop'
-                        ? '#ef4444'
-                        : colors.text
-                    }
-                  />
-                  <ThemedText
-                    style={[
-                      styles.statusPillText,
-                      {
-                        color:
-                          currentPlayer.current_box.next_box_status === 'continue'
-                            ? '#10b981'
-                            : currentPlayer.current_box.next_box_status === 'stop'
-                            ? '#ef4444'
-                            : colors.text,
-                      },
-                    ]}
-                  >
-                    {currentPlayer.current_box.next_box_status === 'continue'
-                      ? 'Réinscrit'
-                      : currentPlayer.current_box.next_box_status === 'stop'
-                      ? 'Arrêt'
-                      : 'Indécis'}
-                  </ThemedText>
-                </View>
-              )}
-            </View>
-          </View>
-        )}
-
         {/* Mon box */}
         {currentPlayer?.current_box && (
           <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderLeft}>
-                <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
-                  <IconSymbol name="square.grid.2x2.fill" size={20} color={PRIMARY_COLOR} />
+                <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20', width: 24, height: 24 }]}>
+                  <IconSymbol name="square.grid.2x2.fill" size={16} color={PRIMARY_COLOR} />
                 </View>
                 <ThemedText style={styles.cardTitle}>Mes matchs</ThemedText>
               </View>
@@ -1372,16 +1052,16 @@ export default function HomeScreen() {
                       })()
                       ) : (
                         <View style={styles.matchItemRightContent}>
-                          <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
-                            <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
-                              À venir
-                            </ThemedText>
-                          </View>
                           {renderDelayButtonInline(item.match, item.opponent) && (
                             <View style={styles.delayButtonWrapper}>
                               {renderDelayButtonInline(item.match, item.opponent)}
                             </View>
                           )}
+                          <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
+                            <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
+                              À venir
+                            </ThemedText>
+                          </View>
                         </View>
                       )}
                   </View>
@@ -1484,44 +1164,6 @@ export default function HomeScreen() {
                 );
               })}
             </View>
-          </View>
-        )}
-
-        {/* Feed d'actualité - Matchs des joueurs suivis */}
-        {followedPlayersMatches.length > 0 && (
-          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-            <View style={styles.cardHeader}>
-              <View style={styles.cardHeaderLeft}>
-                <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
-                  <IconSymbol name="sparkles" size={18} color={PRIMARY_COLOR} />
-                </View>
-                <ThemedText style={[styles.cardTitle, { fontSize: 15 }]}>Derniers matchs des joueurs suivis</ThemedText>
-              </View>
-            </View>
-
-            <ActivityFeed
-              matches={followedPlayersMatches}
-              currentPlayerId={currentPlayer?.id}
-              onPlayerPress={(playerId) => {
-                setSelectedPlayerId(playerId);
-                setShowPlayerModal(true);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }}
-              onReaction={handleReaction}
-              reactions={matchReactions}
-              userReactions={userReactions}
-              onComment={handleComment}
-              onLoadComments={handleLoadComments}
-              onDeleteComment={handleDeleteComment}
-            />
-          </View>
-        )}
-        
-        {followedPlayersMatches.length === 0 && currentPlayer && (
-          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-            <ThemedText style={[styles.emptyText, { color: colors.text, opacity: 0.6 }]}>
-              Suivez des joueurs pour voir leurs matchs dans votre feed
-            </ThemedText>
           </View>
         )}
 
@@ -1692,6 +1334,58 @@ export default function HomeScreen() {
         />
       )}
 
+      {/* Modal de confirmation pour le report */}
+      <Modal
+        visible={showDelayConfirmModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          setShowDelayConfirmModal(false);
+          setPendingDelayMatchId(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.confirmModal, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <View style={styles.confirmModalHeader}>
+              <View style={[styles.confirmModalIconContainer, { backgroundColor: '#f59e0b' + '20' }]}>
+                <IconSymbol name="exclamationmark.triangle.fill" size={24} color="#f59e0b" />
+              </View>
+              <ThemedText style={styles.confirmModalTitle}>Reporter le match ?</ThemedText>
+            </View>
+            
+            <ThemedText style={[styles.confirmModalMessage, { color: colors.text + '80' }]}>
+              Êtes-vous sûr de vouloir reporter ce match ? Une demande sera envoyée à votre adversaire.
+            </ThemedText>
+
+            <View style={styles.confirmModalActions}>
+              <TouchableOpacity
+                style={[styles.confirmModalButton, styles.confirmModalButtonCancel, { borderColor: colors.text + '20' }]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowDelayConfirmModal(false);
+                  setPendingDelayMatchId(null);
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.confirmModalButtonText, { color: colors.text }]}>
+                  Annuler
+                </ThemedText>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.confirmModalButton, styles.confirmModalButtonConfirm, { backgroundColor: '#f59e0b' }]}
+                onPress={confirmRequestDelay}
+                activeOpacity={0.8}
+              >
+                <ThemedText style={[styles.confirmModalButtonText, { color: '#000' }]}>
+                  Confirmer
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       </ThemedView>
   );
 }
@@ -1818,7 +1512,7 @@ const styles = StyleSheet.create({
   },
   card: {
     borderRadius: 16,
-    padding: 16,
+    padding: 14,
     marginBottom: 20,
     borderWidth: 1,
     shadowOffset: { width: 0, height: 2 },
@@ -1840,7 +1534,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   cardHeaderLeft: {
     flexDirection: 'row',
@@ -1948,6 +1642,13 @@ const styles = StyleSheet.create({
   delayButtonTextSmall: {
     fontSize: 11,
     fontWeight: '500',
+  },
+  delayButtonIconOnly: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
   },
   delayStatusBadge: {
     flexDirection: 'row',
@@ -2078,7 +1779,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   matchTime: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '400',
   },
   delayRequestActions: {
@@ -2096,7 +1797,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 8,
   },
   matchItemBorder: {
     borderBottomWidth: 1,
@@ -2107,15 +1808,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   smallAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   smallAvatarText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#FFFFFF',
   },
@@ -2123,12 +1824,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   matchOpponentName: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '500',
-    marginBottom: 2,
+    marginBottom: 1,
   },
   matchDate: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '400',
   },
   matchItemRight: {
@@ -2176,7 +1877,6 @@ const styles = StyleSheet.create({
   heroSection: {
     alignItems: 'center',
     marginBottom: 24,
-    marginTop: 8,
   },
   logoContainer: {
     width: 60,
@@ -2451,6 +2151,73 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     textAlign: 'center',
     paddingVertical: 20,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  confirmModal: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 16,
+    padding: 24,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  confirmModalHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confirmModalIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  confirmModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  confirmModalMessage: {
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  confirmModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  confirmModalButton: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmModalButtonCancel: {
+    borderWidth: 1,
+    backgroundColor: 'transparent',
+  },
+  confirmModalButtonConfirm: {
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  confirmModalButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

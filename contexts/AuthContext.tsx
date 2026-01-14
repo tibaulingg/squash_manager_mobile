@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     try {
       // Récupérer tous les joueurs
-      const players = await api.getPlayers();
+      const players = await api.getPlayersCached();
       
       // Chercher le joueur par email
       const player = players.find((p) => p.email?.toLowerCase() === email.toLowerCase());
@@ -77,7 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signup = async (firstName: string, lastName: string, email: string, password: string, phone: string, desiredBox: string, schedulePreference?: string) => {
     try {
       // Vérifier si le joueur existe déjà
-      const players = await api.getPlayers();
+      const players = await api.getPlayersCached();
       const existingPlayer = players.find(
         (p) => p.first_name?.toLowerCase() === firstName.toLowerCase() && 
                p.last_name?.toLowerCase() === lastName.toLowerCase()

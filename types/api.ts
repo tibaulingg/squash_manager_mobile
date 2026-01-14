@@ -22,6 +22,7 @@ export interface PlayerBoxInfoDTO {
   season_id: string;
   season_name: string;
   next_box_status: string | null;
+  next_box_status_change_date: string | null;
   membership_id: number;
   membership_rank: number;
 }
@@ -60,6 +61,7 @@ export interface MatchDTO {
   no_show_player_id: string | null; // GUID
   running: boolean;
   running_since: string | null;
+  terrain_number: number | null;
 }
 
 // Saison
@@ -98,12 +100,67 @@ export interface FollowStatusDTO {
   followingCount: number;
 }
 
-// Commentaire sur un match
-export interface MatchCommentDTO {
+// Type d'entité pour les réactions et commentaires
+export type EntityType = 'match' | 'membership';
+
+// Commentaire générique (peut être sur un match, membership, etc.)
+export interface CommentDTO {
   id: string; // GUID
-  match_id: string; // GUID
+  entity_type: EntityType; // Type d'entité commentée
+  entity_id: string; // GUID de l'entité (match_id, membership_id, etc.)
   player_id: string; // GUID du commentateur
   text: string;
   created_at: string;
   player: PlayerDTO; // Informations sur le joueur qui a commenté
+}
+
+// Alias pour compatibilité avec l'ancien code
+export interface MatchCommentDTO {
+  id: string; // GUID
+  match_id: string; // GUID (alias pour entity_id)
+  player_id: string; // GUID du commentateur
+  text: string;
+  created_at: string;
+  player: PlayerDTO; // Informations sur le joueur qui a commenté
+  // Champs optionnels pour compatibilité avec le nouveau système
+  entity_type?: EntityType;
+  entity_id?: string;
+}
+
+// Réaction générique (peut être sur un match, membership, etc.)
+export interface ReactionDTO {
+  entity_type: EntityType; // Type d'entité réagie
+  entity_id: string; // GUID de l'entité (match_id, membership_id, etc.)
+  reactions: { [reaction: string]: number }; // { "fire": 5, "clap": 2, ... }
+  userReaction: string | null; // Réaction de l'utilisateur actuel (null si aucune)
+}
+
+// Types de notifications
+export type NotificationType = 'membership_added' | 'match_comment' | 'match_started' | 'match_played';
+
+// Notification
+export interface NotificationDTO {
+  id: string; // GUID
+  player_id: string; // GUID du joueur qui reçoit la notification
+  type: NotificationType;
+  title: string;
+  body: string;
+  data?: {
+    entity_type?: EntityType;
+    entity_id?: string;
+    membership_id?: string;
+    match_id?: string;
+    comment_id?: string;
+    commenter_id?: string;
+    [key: string]: any;
+  };
+  read: boolean;
+  created_at: string;
+}
+
+// Token de notification push
+export interface NotificationTokenDTO {
+  player_id: string; // GUID
+  token: string; // Token Expo Push
+  platform: 'ios' | 'android' | 'web';
 }

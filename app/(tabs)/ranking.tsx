@@ -4,6 +4,7 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, TouchableOpa
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ProfileScreen from '@/app/(tabs)/profil';
+import { AppBar } from '@/components/app-bar';
 import { PlayerAvatar } from '@/components/player-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -74,7 +75,7 @@ export default function RankingScreen() {
       
       // 1. Récupérer tous les joueurs et TOUS les matchs
       const [players, allMatches] = await Promise.all([
-        api.getPlayers(),
+        api.getPlayersCached(refreshing),
         api.getMatches(), // Récupérer tous les matchs
       ]);
       
@@ -304,7 +305,8 @@ export default function RankingScreen() {
   }
 
   return (
-    <ThemedView style={[styles.container, { paddingTop: insets.top }]}>
+    <ThemedView style={styles.container}>
+      <AppBar />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={

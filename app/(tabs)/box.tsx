@@ -5,14 +5,17 @@ import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, TouchableOpa
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ProfileScreen from '@/app/(tabs)/profil';
+import { AppBar } from '@/components/app-bar';
 import { BoxTable } from '@/components/box-table';
+import { GoldenRankingModal } from '@/components/golden-ranking-modal';
+import { LiveMatchCard } from '@/components/live-match-card';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
-import type { MatchDTO, PlayerDTO } from '@/types/api';
+import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
 
 // Types internes pour le composant
 interface Player {
@@ -54,6 +57,9 @@ export default function BoxScreen() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [showPlayerModal, setShowPlayerModal] = useState(false);
   const [allPlayers, setAllPlayers] = useState<PlayerDTO[]>([]);
+  const [liveMatches, setLiveMatches] = useState<MatchDTO[]>([]);
+  const [allBoxes, setAllBoxes] = useState<BoxDTO[]>([]);
+  const [showGoldenRankingModal, setShowGoldenRankingModal] = useState(false);
 
   // Charger les données depuis l'API
   const loadBoxesData = useCallback(async () => {
@@ -77,7 +83,7 @@ export default function BoxScreen() {
       // Récupérer les matchs, les joueurs et les boxes de la saison en cours
       const [seasonMatches, playersList, allBoxes] = await Promise.all([
         api.getMatches(currentSeason.id),
-        api.getPlayers(),
+        api.getPlayersCached(),
         api.getBoxes(currentSeason.id),
       ]);
       
@@ -173,10 +179,35 @@ export default function BoxScreen() {
     }
   }, []);
 
+  // Charger les matchs en live
+  const loadLiveMatches = useCallback(async () => {
+    try {
+      const [matches, seasons, players] = await Promise.all([
+        api.getLiveMatches(),
+        api.getSeasons(),
+        api.getPlayersCached(),
+      ]);
+
+      setAllPlayers(players);
+
+      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+      if (currentSeason) {
+        const boxes = await api.getBoxes(currentSeason.id);
+        setAllBoxes(boxes);
+      }
+
+      setLiveMatches(matches);
+    } catch (error) {
+      console.error('Erreur chargement matchs en live:', error);
+      setLiveMatches([]);
+    }
+  }, []);
+
   // Charger les données au démarrage
   useEffect(() => {
     loadBoxesData();
-  }, [loadBoxesData]);
+    loadLiveMatches();
+  }, [loadBoxesData, loadLiveMatches]);
 
   // Charger les favoris au démarrage
   useEffect(() => {
@@ -287,7 +318,7 @@ export default function BoxScreen() {
     setRefreshing(true);
 
     try {
-      await loadBoxesData();
+      await Promise.all([api.getPlayersCached(true), loadBoxesData(), loadLiveMatches()]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error) {
       console.error('Erreur lors du rafraîchissement:', error);
@@ -295,7 +326,7 @@ export default function BoxScreen() {
     } finally {
       setRefreshing(false);
     }
-  }, [loadBoxesData]);
+  }, [loadBoxesData, loadLiveMatches]);
 
   const handlePlayerPress = useCallback((playerId: string) => {
     setSelectedPlayerId(playerId);
@@ -353,12 +384,22 @@ export default function BoxScreen() {
 
   return (
     <ThemedView style={styles.container}>
+      <AppBar
+        rightAction={{
+          icon: 'trophy.fill',
+          label: '',
+          onPress: () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setShowGoldenRankingModal(true);
+          },
+        }}
+      />
       <ScrollView
         ref={scrollViewRef}
         style={styles.scrollView}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: Math.max(insets.top, 16) },
+          { paddingTop: 16 },
         ]}
         onScroll={handleScroll}
         scrollEventThrottle={16}
@@ -374,6 +415,34 @@ export default function BoxScreen() {
           />
         }
       >
+        {/* Matchs en live */}
+        {liveMatches.length > 0 && (
+          <View style={styles.liveMatchesSection}>
+            {liveMatches.map((match) => {
+              const playerA = allPlayers.find((p) => p.id === match.player_a_id);
+              const playerB = allPlayers.find((p) => p.id === match.player_b_id);
+              const box = allBoxes.find((b) => b.id === match.box_id);
+
+              if (!playerA || !playerB) return null;
+
+              return (
+                <LiveMatchCard
+                  key={match.id}
+                  match={match}
+                  playerA={playerA}
+                  playerB={playerB}
+                  box={box}
+                  onPlayerPress={(playerId) => {
+                    setSelectedPlayerId(playerId);
+                    setShowPlayerModal(true);
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                />
+              );
+            })}
+          </View>
+        )}
+
         {boxesData.map((box, index) => (
           <View
             key={box.id}
@@ -440,6 +509,12 @@ export default function BoxScreen() {
           }}
         />
       )}
+      
+      {/* Modal Golden Ranking */}
+      <GoldenRankingModal
+        visible={showGoldenRankingModal}
+        onClose={() => setShowGoldenRankingModal(false)}
+      />
     </ThemedView>
   );
 }
@@ -555,6 +630,41 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 16,
     borderBottomRightRadius: 16,
     overflow: 'hidden',
+  },
+  liveMatchesSection: {
+    marginBottom: 24,
+  },
+  liveMatchesHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  liveMatchesHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  liveIconContainer: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  liveMatchesTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  liveBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  liveBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });
 
