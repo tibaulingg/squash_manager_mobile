@@ -18,6 +18,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { MatchDTO, PlayerDTO, WaitingListEntryDTO } from '@/types/api';
 import { formatMatchScore, getMatchSpecialStatus } from '@/utils/match-helpers';
+import { getDefaultSeason, getSeasonFromBoxMembership } from '@/utils/season-helpers';
 
 // Couleur d'avatar sobre
 const AVATAR_COLOR = '#9ca3af';
@@ -147,14 +148,20 @@ export default function HomeScreen() {
       }
       
       // 2. Récupérer la saison en cours
+      // Pour la page d'accueil, utiliser la saison du box où le joueur a un membership
       const seasons = await api.getSeasonsCached(isRefresh);
-      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+      const currentSeason = getSeasonFromBoxMembership(player, seasons) || getDefaultSeason(seasons);
       
       if (!currentSeason) return;
       
       // 3. Récupérer les matchs du joueur (filtrer par box_id si le joueur a un box pour réduire la taille)
       const boxId = player.current_box?.box_id;
       const matches = await api.getMatches(currentSeason.id, boxId);
+
+      console.log('boxId', boxId) 
+      console.log(currentSeason)
+      console.log('matches', matches)
+
       const playerMatches = matches.filter(
         (m) => m.player_a_id === player.id || m.player_b_id === player.id
       );
@@ -196,6 +203,7 @@ export default function HomeScreen() {
       // Tous les matchs du box actuel
       if (player.current_box) {
         const currentBoxMatches = matches.filter((m) => m.box_id === player.current_box?.box_id);
+
         const myBoxMatches = currentBoxMatches
           .filter((m) => m.player_a_id === player.id || m.player_b_id === player.id)
           .map((match) => {
@@ -1839,6 +1847,7 @@ const styles = StyleSheet.create({
   matchDateContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginTop: 1,
   },
   matchTime: {
     fontSize: 11,
@@ -1891,7 +1900,7 @@ const styles = StyleSheet.create({
   matchOpponentName: {
     fontSize: 14,
     fontWeight: '500',
-    marginBottom: 1,
+    marginBottom: 0,
   },
   matchDate: {
     fontSize: 11,

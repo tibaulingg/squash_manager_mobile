@@ -15,6 +15,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
+import { getActiveSeasons } from '@/utils/season-helpers';
 
 export default function LiveMatchesScreen() {
   const colorScheme = useColorScheme();
@@ -45,11 +46,12 @@ export default function LiveMatchesScreen() {
 
       setAllPlayers(players);
 
-      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
-      if (currentSeason) {
-        const boxes = await api.getBoxes(currentSeason.id);
-        setAllBoxes(boxes);
-      }
+      // Récupérer toutes les boxes de toutes les saisons actives (toutes compétitions)
+      const activeSeasons = getActiveSeasons(seasons);
+      const allBoxesPromises = activeSeasons.map(season => api.getBoxes(season.id));
+      const boxesArrays = await Promise.all(allBoxesPromises);
+      const allBoxesFlat = boxesArrays.flat();
+      setAllBoxes(allBoxesFlat);
 
       setLiveMatches(matches);
     } catch (error) {

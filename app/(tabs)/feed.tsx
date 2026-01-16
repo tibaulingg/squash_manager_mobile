@@ -19,6 +19,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
 import { getMatchSpecialStatus } from '@/utils/match-helpers';
+import { getActiveSeasons, getSeasonFromBoxMembership, getDefaultSeason } from '@/utils/season-helpers';
 
 export default function FeedScreen() {
   const colorScheme = useColorScheme();
@@ -103,12 +104,14 @@ export default function FeedScreen() {
       const oneWeekAgo = new Date(todayStart);
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
  
-      // Récupérer la saison en cours
+      // Récupérer toutes les saisons actives pour avoir les matchs de toutes les compétitions
       const seasons = await api.getSeasonsCached(isRefresh);
-      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+      const activeSeasons = getActiveSeasons(seasons);
       
-      // Récupérer tous les matchs de la saison en cours (pour avoir aussi ceux du joueur connecté)
-      const allMatches = await api.getMatches(currentSeason?.id);
+      // Récupérer tous les matchs de toutes les saisons actives (pour voir les matchs des joueurs suivis dans toutes les compétitions)
+      const allMatchesPromises = activeSeasons.map(season => api.getMatches(season.id));
+      const allMatchesArrays = await Promise.all(allMatchesPromises);
+      const allMatches = allMatchesArrays.flat();
    
       // Filtrer les matchs : seulement ceux des 7 derniers jours avec résultats valides
       // Inclure les matchs des joueurs suivis ET les matchs du joueur connecté
@@ -326,11 +329,12 @@ export default function FeedScreen() {
 
       setAllPlayers(players);
 
-      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
-      if (currentSeason) {
-        const boxes = await api.getBoxes(currentSeason.id);
-        setAllBoxes(boxes);
-      }
+      // Récupérer toutes les boxes de toutes les saisons actives (pour afficher les boxes de tous les matchs en live)
+      const activeSeasons = getActiveSeasons(seasons);
+      const allBoxesPromises = activeSeasons.map(season => api.getBoxes(season.id));
+      const boxesArrays = await Promise.all(allBoxesPromises);
+      const allBoxesFlat = boxesArrays.flat();
+      setAllBoxes(allBoxesFlat);
 
       // Filtrer les matchs : seulement ceux où le joueur suit un des deux joueurs
       const followedIds = following.map(p => p.id);

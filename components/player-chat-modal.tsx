@@ -11,6 +11,7 @@ import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { MatchCommentDTO, MatchDTO, PlayerDTO } from '@/types/api';
+import { getSeasonFromBoxMembership, getDefaultSeason } from '@/utils/season-helpers';
 
 interface PlayerChatModalProps {
   visible: boolean;
@@ -173,7 +174,8 @@ export function PlayerChatModal({
           setMatchId(providedMatchId);
           // Charger les informations du match
           const seasons = await api.getSeasonsCached();
-          const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+          // Utiliser la saison du box où le joueur connecté a un membership
+          const currentSeason = getSeasonFromBoxMembership(current || null, seasons) || getDefaultSeason(seasons);
           if (currentSeason) {
             const matches = await api.getMatches(currentSeason.id);
             foundMatch = matches.find((m) => m.id === providedMatchId) || null;
@@ -185,7 +187,8 @@ export function PlayerChatModal({
 
         // Sinon, chercher le match entre les deux joueurs dans la saison en cours
         const seasons = await api.getSeasonsCached();
-        const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+        // Utiliser la saison du box où le joueur connecté a un membership
+        const currentSeason = getSeasonFromBoxMembership(current || null, seasons) || getDefaultSeason(seasons);
         
         if (!currentSeason) {
           setMatchNotFound(true);
@@ -502,7 +505,7 @@ export function PlayerChatModal({
                                     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                                     // Recharger les informations du match
                                     const seasons = await api.getSeasonsCached();
-                                    const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+                                    const currentSeason = getSeasonFromBoxMembership(currentPlayer, seasons) || getDefaultSeason(seasons);
                                     if (currentSeason && match.id) {
                                       const matches = await api.getMatches(currentSeason.id);
                                       const updatedMatch = matches.find((m) => m.id === match.id);
@@ -547,7 +550,7 @@ export function PlayerChatModal({
                                     Alert.alert('Demande envoyée', 'Votre demande de report a été envoyée à votre adversaire');
                                     // Recharger les informations du match
                                     const seasons = await api.getSeasonsCached();
-                                    const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+                                    const currentSeason = getSeasonFromBoxMembership(currentPlayer, seasons) || getDefaultSeason(seasons);
                                     if (currentSeason && match.id) {
                                       const matches = await api.getMatches(currentSeason.id);
                                       const updatedMatch = matches.find((m) => m.id === match.id);
@@ -737,7 +740,7 @@ export function PlayerChatModal({
                           
                           // Recharger les informations du match
                           const seasons = await api.getSeasonsCached();
-                          const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+                          const currentSeason = getSeasonFromBoxMembership(currentPlayer, seasons) || getDefaultSeason(seasons);
                           if (currentSeason && match.id) {
                             const matches = await api.getMatches(currentSeason.id);
                             const updatedMatch = matches.find((m) => m.id === match.id);

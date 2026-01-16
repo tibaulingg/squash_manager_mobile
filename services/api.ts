@@ -1,5 +1,5 @@
 import { API_BASE_URL } from '@/constants/config';
-import type { BoxDTO, CommentDTO, EntityType, FollowStatusDTO, MatchCommentDTO, MatchDTO, NotificationDTO, NotificationTokenDTO, PlayerDTO, PlayerFollowDTO, ReactionDTO, SeasonDTO, WaitingListEntryDTO } from '@/types/api';
+import type { BoxDTO, CommentDTO, CompetitionDTO, EntityType, FollowStatusDTO, MatchCommentDTO, MatchDTO, NotificationDTO, NotificationTokenDTO, PlayerDTO, PlayerFollowDTO, ReactionDTO, SeasonDTO, WaitingListEntryDTO } from '@/types/api';
 import { ApiError, createApiError, createNetworkError } from '@/utils/api-errors';
 
 // Helper pour convertir CommentDTO en MatchCommentDTO (pour compatibilité)
@@ -111,6 +111,9 @@ let seasonsCachePromise: Promise<SeasonDTO[]> | null = null;
 
 // Services API minimaux
 export const api = {
+  // Compétitions
+  getCompetitions: () => fetchApi<CompetitionDTO[]>('/Competitions'),
+  
   // Saisons
   getSeasons: () => fetchApi<SeasonDTO[]>('/Seasons'),
   

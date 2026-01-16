@@ -20,6 +20,7 @@ import { useImagePicker } from '@/hooks/use-image-picker';
 import { api } from '@/services/api';
 import type { MatchCommentDTO, PlayerDTO } from '@/types/api';
 import { formatMatchScore, getMatchSpecialStatus, isSpecialCaseMatch } from '@/utils/match-helpers';
+import { getSeasonFromBoxMembership, getDefaultSeason } from '@/utils/season-helpers';
 
 // Couleur d'avatar sobre
 const AVATAR_COLOR = '#9ca3af';
@@ -306,8 +307,9 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
       }
       
       // 2. Récupérer la saison en cours
+      // Pour le profil, utiliser la saison du box où le joueur a un membership
       const seasons = await api.getSeasonsCached();
-      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
+      const currentSeason = getSeasonFromBoxMembership(player, seasons) || getDefaultSeason(seasons);
       
       if (!currentSeason) return;
       

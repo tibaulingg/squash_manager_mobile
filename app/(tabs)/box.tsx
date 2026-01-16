@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Platform, RefreshControl, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import ProfileScreen from '@/app/(tabs)/profil';
@@ -17,7 +17,8 @@ import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
-import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
+import type { BoxDTO, CompetitionDTO, MatchDTO, PlayerDTO, SeasonDTO } from '@/types/api';
+import { getActiveSeasons } from '@/utils/season-helpers';
 
 // Types internes pour le composant
 interface Player {
@@ -64,25 +65,67 @@ export default function BoxScreen() {
   const [showGoldenRankingModal, setShowGoldenRankingModal] = useState(false);
   const [showChatModal, setShowChatModal] = useState(false);
   const [selectedPlayerForChat, setSelectedPlayerForChat] = useState<{ id: string; name: string } | null>(null);
+  const [competitions, setCompetitions] = useState<CompetitionDTO[]>([]);
+  const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(null);
+  const [seasonsByCompetition, setSeasonsByCompetition] = useState<Map<string, SeasonDTO[]>>(new Map());
   const { user } = useAuth();
 
+  // Charger les compétitions et grouper les saisons
+  const loadCompetitionsAndSeasons = useCallback(async () => {
+    try {
+      const [competitionsList, allSeasons] = await Promise.all([
+        api.getCompetitions(),
+        api.getSeasonsCached(),
+      ]);
+
+      // Filtrer les compétitions actives
+      const activeCompetitions = competitionsList.filter(c => c.active);
+      setCompetitions(activeCompetitions);
+
+      // Grouper les saisons actives par compétition
+      const activeSeasons = getActiveSeasons(allSeasons);
+      const seasonsMap = new Map<string, SeasonDTO[]>();
+      
+      activeSeasons.forEach(season => {
+        const compId = season.competition_id;
+        if (!seasonsMap.has(compId)) {
+          seasonsMap.set(compId, []);
+        }
+        seasonsMap.get(compId)!.push(season);
+      });
+
+      setSeasonsByCompetition(seasonsMap);
+
+      // Sélectionner la première compétition par défaut
+      if (activeCompetitions.length > 0 && !selectedCompetitionId) {
+        setSelectedCompetitionId(activeCompetitions[0].id);
+      }
+    } catch (err) {
+      console.error('Erreur lors du chargement des compétitions:', err);
+    }
+  }, [selectedCompetitionId]);
+
   // Charger les données depuis l'API
-  const loadBoxesData = useCallback(async () => {
+  const loadBoxesData = useCallback(async (competitionId: string | null) => {
+    if (!competitionId) return;
+
     try {
       setIsLoading(true);
       setError(null);
+      // Vider les données précédentes immédiatement pour éviter d'afficher l'ancien contenu
+      setBoxesData([]);
       
-      // D'abord récupérer les saisons pour obtenir la saison en cours
-      const allSeasons = await api.getSeasonsCached();
-
-      // Trouver la saison en cours (status = 'running' ou autre critère)
-      const currentSeason = allSeasons.find((s) => s.status === 'running') || allSeasons[0];
+      // Récupérer les saisons de cette compétition
+      const competitionSeasons = seasonsByCompetition.get(competitionId) || [];
       
-      if (!currentSeason) {
-        setError('Aucune saison trouvée');
+      if (competitionSeasons.length === 0) {
+        setError('Aucune saison active pour cette compétition');
         setIsLoading(false);
         return;
       }
+
+      // Utiliser la première saison de la compétition (ou la plus récente)
+      const currentSeason = competitionSeasons[0];
 
       // Récupérer les matchs, les joueurs et les boxes de la saison en cours
       const [seasonMatches, playersList, allBoxes] = await Promise.all([
@@ -181,7 +224,19 @@ export default function BoxScreen() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [seasonsByCompetition]);
+
+  // Charger les compétitions au démarrage
+  useEffect(() => {
+    loadCompetitionsAndSeasons();
+  }, [loadCompetitionsAndSeasons]);
+
+  // Charger les boxes quand la compétition change
+  useEffect(() => {
+    if (selectedCompetitionId && seasonsByCompetition.size > 0) {
+      loadBoxesData(selectedCompetitionId);
+    }
+  }, [selectedCompetitionId, seasonsByCompetition, loadBoxesData]);
 
   // Charger les matchs en live
   const loadLiveMatches = useCallback(async () => {
@@ -194,11 +249,12 @@ export default function BoxScreen() {
 
       setAllPlayers(players);
 
-      const currentSeason = seasons.find((s) => s.status === 'running') || seasons[0];
-      if (currentSeason) {
-        const boxes = await api.getBoxes(currentSeason.id);
-        setAllBoxes(boxes);
-      }
+      // Récupérer toutes les boxes de toutes les saisons actives
+      const activeSeasons = getActiveSeasons(seasons);
+      const allBoxesPromises = activeSeasons.map(season => api.getBoxes(season.id));
+      const boxesArrays = await Promise.all(allBoxesPromises);
+      const allBoxesFlat = boxesArrays.flat();
+      setAllBoxes(allBoxesFlat);
 
       setLiveMatches(matches);
     } catch (error) {
@@ -207,11 +263,10 @@ export default function BoxScreen() {
     }
   }, []);
 
-  // Charger les données au démarrage
+  // Charger les matchs en live au démarrage
   useEffect(() => {
-    loadBoxesData();
     loadLiveMatches();
-  }, [loadBoxesData, loadLiveMatches]);
+  }, [loadLiveMatches]);
 
   // Charger les favoris au démarrage
   useEffect(() => {
@@ -325,7 +380,7 @@ export default function BoxScreen() {
       await Promise.all([
         api.getPlayersCached(true),
         api.getSeasonsCached(true),
-        loadBoxesData(),
+        loadCompetitionsAndSeasons(),
         loadLiveMatches(),
       ]);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -350,54 +405,6 @@ export default function BoxScreen() {
     setShowChatModal(true);
   }, [user]);
 
-  // Afficher le chargement initial
-  if (isLoading) {
-    return (
-      <ThemedView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.text + '80'} />
-          <ThemedText style={[styles.loadingText, { color: colors.text, opacity: 0.5 }]}>
-            Chargement des boxes...
-          </ThemedText>
-        </View>
-      </ThemedView>
-    );
-  }
-
-  // Afficher une erreur si nécessaire
-  if (error) {
-    return (
-      <ThemedView style={styles.container}>
-        <View style={styles.errorContainer}>
-          <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.text + '60'} />
-          <ThemedText style={styles.errorText}>Erreur lors du chargement</ThemedText>
-          <ThemedText style={[styles.errorSubtext, { color: colors.text + '60' }]}>
-            {error}
-          </ThemedText>
-          <TouchableOpacity
-            style={[styles.retryButton, { backgroundColor: PRIMARY_COLOR }]}
-            onPress={loadBoxesData}
-            activeOpacity={0.7}
-          >
-            <ThemedText style={styles.retryButtonText}>Réessayer</ThemedText>
-          </TouchableOpacity>
-        </View>
-      </ThemedView>
-    );
-  }
-
-  // Afficher un message si aucun box
-  if (boxesData.length === 0) {
-    return (
-      <ThemedView style={styles.container}>
-        <View style={styles.emptyContainer}>
-          <IconSymbol name="tray.fill" size={48} color={colors.text + '60'} />
-          <ThemedText style={styles.emptyText}>Aucun box disponible</ThemedText>
-        </View>
-      </ThemedView>
-    );
-  }
-
   return (
     <ThemedView style={styles.container}>
       <AppBar
@@ -410,13 +417,54 @@ export default function BoxScreen() {
           },
         }}
       />
+      
+      {/* Onglets de compétitions */}
+      {competitions.length > 1 && (
+        <View style={[styles.competitionsTabs, { backgroundColor: colors.background, borderBottomColor: colors.text + '15' }]}>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.competitionsTabsContent}
+          >
+            {competitions.map((competition) => {
+              const isSelected = selectedCompetitionId === competition.id;
+              return (
+                <TouchableOpacity
+                  key={competition.id}
+                  style={[
+                    styles.competitionTab,
+                    isSelected && [styles.competitionTabActive, { backgroundColor: colors.text + '15' }],
+                    !isSelected && { backgroundColor: 'transparent' },
+                  ]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    // Vider les données immédiatement avant de changer d'onglet
+                    setBoxesData([]);
+                    setIsLoading(true);
+                    setSelectedCompetitionId(competition.id);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <ThemedText
+                    style={[
+                      styles.competitionTabText,
+                      { color: isSelected ? colors.text : colors.text + '60' },
+                      isSelected && { fontWeight: '600' },
+                      !isSelected && { fontWeight: '500' },
+                    ]}
+                  >
+                    {competition.name}
+                  </ThemedText>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+      
       <ScrollView
         ref={scrollViewRef}
         style={styles.scrollView}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingTop: 16 },
-        ]}
         onScroll={handleScroll}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={true}
@@ -430,7 +478,44 @@ export default function BoxScreen() {
             progressBackgroundColor={colorScheme === 'dark' ? '#1a1a1a' : '#ffffff'}
           />
         }
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: 16 },
+          (isLoading || (boxesData.length === 0 && !isLoading && !error)) && {
+            ...styles.scrollContentCentered,
+            // Calcul: screenHeight - AppBar (insets.top + 56) - onglets compétition (10*2 + 40 + 1) - tab bar (88 iOS / 64 Android)
+            minHeight: screenHeight - insets.top - 56 - (competitions.length > 1 ? 61 : 0) - (Platform.OS === 'ios' ? 88 : 64),
+          },
+        ]}
       >
+        {/* Message d'erreur */}
+        {error && !isLoading && (
+          <View style={styles.errorContainer}>
+            <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.text + '60'} />
+            <ThemedText style={[styles.errorText, { color: colors.text }]}>Erreur lors du chargement</ThemedText>
+            <ThemedText style={[styles.errorSubtext, { color: colors.text + '60' }]}>
+              {error}
+            </ThemedText>
+            <TouchableOpacity
+              style={[styles.retryButton, { backgroundColor: PRIMARY_COLOR }]}
+              onPress={() => selectedCompetitionId && loadBoxesData(selectedCompetitionId)}
+              activeOpacity={0.7}
+            >
+              <ThemedText style={styles.retryButtonText}>Réessayer</ThemedText>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Message de chargement */}
+        {isLoading && !error && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.text + '80'} />
+            <ThemedText style={[styles.loadingText, { color: colors.text, opacity: 0.5 }]}>
+              Chargement des boxes...
+            </ThemedText>
+          </View>
+        )}
+
         {/* Matchs en live */}
         {liveMatches.length > 0 && (
           <View style={styles.liveMatchesSection}>
@@ -456,6 +541,17 @@ export default function BoxScreen() {
                 />
               );
             })}
+          </View>
+        )}
+
+        {/* Message si aucun box */}
+        {boxesData.length === 0 && !isLoading && (
+          <View style={styles.emptyContainer}>
+            <IconSymbol name="tray.fill" size={48} color={colors.text + '60'} />
+            <ThemedText style={[styles.emptyText, { color: colors.text }]}>Aucun box disponible</ThemedText>
+            <ThemedText style={[styles.emptySubtext, { color: colors.text + '60' }]}>
+              Cette compétition n'a pas encore de boxes
+            </ThemedText>
           </View>
         )}
 
@@ -579,12 +675,15 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 32,
   },
+  scrollContentCentered: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
   loadingContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
-    minHeight: 400,
+    padding: 40,
+    minHeight: 300,
   },
   loadingText: {
     marginTop: 16,
@@ -592,10 +691,10 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   errorContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 40,
+    minHeight: 300,
   },
   errorText: {
     marginTop: 16,
@@ -621,15 +720,21 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   emptyContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 40,
+    minHeight: 300,
   },
   emptyText: {
     marginTop: 16,
-    fontSize: 16,
-    fontWeight: '500',
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  emptySubtext: {
+    marginTop: 8,
+    fontSize: 14,
+    fontWeight: '400',
     textAlign: 'center',
   },
   boxContainer: {
@@ -715,6 +820,30 @@ const styles = StyleSheet.create({
   liveBadgeText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  competitionsTabs: {
+    borderBottomWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  competitionsTabsContent: {
+    gap: 4,
+    alignItems: 'center',
+  },
+  competitionTab: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginRight: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  competitionTabActive: {
+    // Style actif géré inline avec backgroundColor
+  },
+  competitionTabText: {
+    fontSize: 14,
+    fontWeight: '500',
   },
 });
 

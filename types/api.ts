@@ -64,6 +64,14 @@ export interface MatchDTO {
   terrain_number: number | null;
 }
 
+// Compétition
+export interface CompetitionDTO {
+  id: string;
+  name: string;
+  description: string | null;
+  active: boolean;
+}
+
 // Saison
 export interface SeasonDTO {
   id: string;
