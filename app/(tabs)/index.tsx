@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -83,6 +83,7 @@ export default function HomeScreen() {
     matches: number;
     position: number;
   }>>([]);
+  const [lastFocusTime, setLastFocusTime] = useState<number>(0);
 
   const loadData = useCallback(async (isRefresh = false) => {
     if (!isAuthenticated || !user) {
@@ -96,16 +97,41 @@ export default function HomeScreen() {
       }
       
       // 1. Trouver le joueur par email
-      const players = await api.getPlayersCached(isRefresh);
-      setAllPlayers(players); // Sauvegarder tous les joueurs
-      const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+      let player: PlayerDTO | undefined;
+      let players: PlayerDTO[];
+      
+      // Si on a déjà le joueur en cache et c'est un refresh, utiliser son box_id directement
+      if (isRefresh && currentPlayer?.current_box?.box_id) {
+        // Recharger uniquement les joueurs du box du joueur
+        players = await api.getPlayersCached(true, currentPlayer.current_box.box_id);
+        // Le joueur actuel devrait être dans cette liste
+        player = players.find((p) => p.id === currentPlayer.id) || currentPlayer;
+      } else {
+        // Premier chargement ou pas de box : charger tous les joueurs
+        // Forcer le refresh pour s'assurer d'avoir les données à jour (notamment après inscription)
+        players = await api.getPlayersCached(isRefresh);
+        player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+      }
       
       if (!player) {
-        Alert.alert('Erreur', 'Joueur non trouvé dans la base de données');
-        return;
+        // Si le joueur n'est pas trouvé, essayer de recharger depuis l'API directement
+        console.warn('Joueur non trouvé dans le cache, tentative de rechargement...');
+        try {
+          api.clearPlayersCache();
+          players = await api.getPlayersCached(true);
+          player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+        } catch (retryError) {
+          console.error('Erreur lors du rechargement:', retryError);
+        }
+        
+        if (!player) {
+          Alert.alert('Erreur', 'Joueur non trouvé dans la base de données');
+          return;
+        }
       }
       
       setCurrentPlayer(player);
+      setAllPlayers(players); // Sauvegarder les joueurs (filtrés ou non selon le cas)
       
       // Si le joueur n'a pas de membership actif, charger la file d'attente
       if (!player.current_box) {
@@ -289,11 +315,29 @@ export default function HomeScreen() {
   }, [user, isAuthenticated]);
 
   useEffect(() => {
-    loadData(false);
-  }, [loadData]);
+    // Toujours charger avec refresh au premier chargement pour éviter les problèmes de cache
+    if (isAuthenticated && user) {
+      loadData(true);
+    } else {
+      // Réinitialiser l'état si on n'est plus connecté
+      setCurrentPlayer(null);
+      setLoading(false);
+    }
+  }, [loadData, isAuthenticated, user]);
 
-  // NOTE: on évite useFocusEffect pour éviter les doublons de requêtes.
-  // Le refresh se fait via pull-to-refresh.
+  // Recharger les données quand on revient sur l'onglet (pour mettre à jour après modification du profil)
+  useFocusEffect(
+    useCallback(() => {
+      const now = Date.now();
+      // Recharger seulement si on n'a pas rechargé récemment (évite les rechargements trop fréquents)
+      // ou si le cache a été invalidé (détecté par le fait qu'on revient après un délai)
+      if (now - lastFocusTime > 1000 || lastFocusTime === 0) {
+        setLastFocusTime(now);
+        // Recharger avec refresh pour avoir les données à jour (notamment après modification de membership)
+        loadData(true);
+      }
+    }, [loadData, lastFocusTime])
+  );
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -756,7 +800,7 @@ export default function HomeScreen() {
           style={styles.scrollView}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: Math.max(insets.top, 20) + 20 },
+            { paddingTop: 20 },
           ]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -768,12 +812,6 @@ export default function HomeScreen() {
             />
           }
         >
-          {/* Header */}
-          <View style={styles.welcomeHeader}>
-            <ThemedText style={styles.welcomeName}>
-              {currentPlayer.first_name} {currentPlayer.last_name}
-            </ThemedText>
-          </View>
 
           {/* Message d'information */}
           <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
@@ -1046,11 +1084,29 @@ export default function HomeScreen() {
                               );
                             })()
                             ) : (
-                              <View style={[styles.pendingTag, { backgroundColor: colors.text + '10' }]}>
-                                <ThemedText style={[styles.pendingTagText, { color: colors.text, opacity: 0.6 }]}>
-                                  À venir
-                                </ThemedText>
-                              </View>
+                              // Afficher les chips de statut de report si nécessaire
+                              (() => {
+                                const delayStatus = item.match.delayed_status;
+                                const delayedRequestedBy = item.match.delayed_requested_by;
+                                const isCurrentPlayerRequesting = delayedRequestedBy === currentPlayer.id;
+                                
+                                if (delayStatus === 'pending' && delayedRequestedBy) {
+                                  return (
+                                    <View style={[styles.pendingTag, { 
+                                      backgroundColor: isCurrentPlayerRequesting ? '#FFA50015' : '#FFA50015',
+                                    }]}>
+                                      <ThemedText style={[styles.pendingTagText, { 
+                                        color: isCurrentPlayerRequesting ? '#FFA500' : '#FFA500',
+                                      }]}>
+                                        {isCurrentPlayerRequesting ? 'Rep. demandé' : 'Rep. attente'}
+                                      </ThemedText>
+                                    </View>
+                                  );
+                                }
+                                
+                                // Ne rien afficher si pas de statut
+                                return null;
+                              })()
                             )}
                           {/* Boutons d'action compacts */}
                           <View style={styles.matchActionsCompact}>

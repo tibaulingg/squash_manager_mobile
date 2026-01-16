@@ -20,6 +20,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { api } from '@/services/api';
 
 interface AuthModalProps {
   visible: boolean;
@@ -31,13 +32,16 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
   const colors = Colors[colorScheme ?? 'light'];
   const { login, signup } = useAuth();
 
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [mode, setMode] = useState<'login' | 'signup' | 'forgotPassword'>('login');
   const [loading, setLoading] = useState(false);
 
   // Formulaire connexion
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+
+  // Formulaire mot de passe oublié
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
 
   // Formulaire inscription
   const [signupFirstName, setSignupFirstName] = useState('');
@@ -54,13 +58,14 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
   };
 
   const handleLogin = async () => {
+    // Validation côté client
     if (!loginEmail || !loginPassword) {
       Alert.alert('Erreur', 'Veuillez remplir tous les champs');
       return;
     }
 
     if (!loginEmail.includes('@')) {
-      Alert.alert('Erreur', 'Email invalide');
+      Alert.alert('Erreur', 'Veuillez entrer une adresse email valide');
       return;
     }
 
@@ -73,25 +78,29 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
       setLoginEmail('');
       setLoginPassword('');
     } catch (error: any) {
-      Alert.alert('Erreur', error.message || 'Email ou mot de passe incorrect');
+      // Afficher le message d'erreur (déjà formaté par AuthContext)
+      const errorMessage = error?.message || 'Une erreur est survenue lors de la connexion';
+      Alert.alert('Erreur de connexion', errorMessage);
     } finally {
       setLoading(false);
     }
   };
 
   const handleSignup = async () => {
+    // Validation côté client
     if (!signupFirstName || !signupLastName || !signupEmail || !signupPhone || !signupPassword) {
       Alert.alert('Erreur', 'Veuillez remplir tous les champs');
       return;
     }
 
     if (!signupEmail.includes('@')) {
-      Alert.alert('Erreur', 'Email invalide');
+      Alert.alert('Erreur', 'Veuillez entrer une adresse email valide');
       return;
     }
-
-    if (signupPassword.length < 6) {
-      Alert.alert('Erreur', 'Le mot de passe doit contenir au moins 6 caractères');
+    // Validation du téléphone (optionnel mais recommandé)
+    const phoneRegex = /^[\d\s\-\+\(\)]+$/;
+    if (!phoneRegex.test(signupPhone)) {
+      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide');
       return;
     }
 
@@ -117,7 +126,9 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
       setShowSignupPassword(false);
       setSignupSchedulePreference('peu_importe');
     } catch (error: any) {
-      Alert.alert('Erreur', error.message || 'Impossible de créer le compte');
+      // Afficher le message d'erreur (déjà formaté par AuthContext)
+      const errorMessage = error?.message || 'Une erreur est survenue lors de l\'inscription';
+      Alert.alert('Erreur d\'inscription', errorMessage);
     } finally {
       setLoading(false);
     }
@@ -126,6 +137,44 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
   const switchMode = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setMode(mode === 'login' ? 'signup' : 'login');
+  };
+
+  const handleForgotPassword = async () => {
+    // Validation côté client
+    if (!forgotPasswordEmail) {
+      Alert.alert('Erreur', 'Veuillez entrer votre adresse email');
+      return;
+    }
+
+    if (!forgotPasswordEmail.includes('@')) {
+      Alert.alert('Erreur', 'Veuillez entrer une adresse email valide');
+      return;
+    }
+
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      setLoading(true);
+      await api.requestPasswordReset(forgotPasswordEmail.trim().toLowerCase());
+      Alert.alert(
+        'Email envoyé',
+        'Si cette adresse email existe dans notre base de données, vous recevrez un email avec les instructions pour réinitialiser votre mot de passe.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              setMode('login');
+              setForgotPasswordEmail('');
+            },
+          },
+        ]
+      );
+    } catch (error: any) {
+      // Afficher le message d'erreur
+      const errorMessage = error?.message || 'Une erreur est survenue lors de l\'envoi de la demande';
+      Alert.alert('Erreur', errorMessage);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -163,7 +212,7 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
                 />
               </View>
               <ThemedText style={styles.title}>
-                {mode === 'login' ? 'Connexion' : 'Inscription'}
+                {mode === 'login' ? 'Connexion' : mode === 'signup' ? 'Inscription' : 'Mot de passe oublié'}
               </ThemedText>
             </View>
 
@@ -218,6 +267,20 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
                   </View>
                 </View>
 
+                {/* Lien mot de passe oublié */}
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setMode('forgotPassword');
+                  }}
+                  style={styles.forgotPasswordLink}
+                  disabled={loading}
+                >
+                  <ThemedText style={[styles.forgotPasswordText, { color: PRIMARY_COLOR }]}>
+                    Mot de passe oublié ?
+                  </ThemedText>
+                </TouchableOpacity>
+
                 <TouchableOpacity
                   style={[styles.submitButton, { backgroundColor: PRIMARY_COLOR }]}
                   onPress={handleLogin}
@@ -229,6 +292,61 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
                   ) : (
                     <ThemedText style={styles.submitButtonText}>Se connecter</ThemedText>
                   )}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Formulaire Mot de passe oublié */}
+            {mode === 'forgotPassword' && (
+              <View style={styles.form}>
+                <ThemedText style={[styles.description, { color: colors.text + '70' }]}>
+                  Entrez votre adresse email et nous vous enverrons un lien pour réinitialiser votre mot de passe.
+                </ThemedText>
+
+                <View style={styles.inputGroup}>
+                  <ThemedText style={[styles.label, { color: colors.text + '80' }]}>
+                    Email
+                  </ThemedText>
+                  <TextInput
+                    style={[styles.input, { backgroundColor: colors.text + '05', color: colors.text, borderColor: colors.text + '20' }]}
+                    value={forgotPasswordEmail}
+                    onChangeText={setForgotPasswordEmail}
+                    placeholder="email@example.com"
+                    placeholderTextColor={colors.text + '40'}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!loading}
+                  />
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.submitButton, { backgroundColor: PRIMARY_COLOR }]}
+                  onPress={handleForgotPassword}
+                  disabled={loading}
+                  activeOpacity={0.8}
+                >
+                  {loading ? (
+                    <ActivityIndicator size="small" color="#000" />
+                  ) : (
+                    <ThemedText style={styles.submitButtonText}>Envoyer la demande</ThemedText>
+                  )}
+                </TouchableOpacity>
+
+                {/* Retour à la connexion */}
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setMode('login');
+                    setForgotPasswordEmail('');
+                  }}
+                  style={styles.backButton}
+                  disabled={loading}
+                >
+                  <IconSymbol name="chevron.left" size={16} color={colors.text + '60'} />
+                  <ThemedText style={[styles.backButtonText, { color: colors.text + '60' }]}>
+                    Retour à la connexion
+                  </ThemedText>
                 </TouchableOpacity>
               </View>
             )}
@@ -432,17 +550,19 @@ export function AuthModal({ visible, onClose }: AuthModalProps) {
               </View>
             )}
 
-            {/* Basculer entre connexion et inscription */}
-            <View style={styles.switchContainer}>
-              <ThemedText style={[styles.switchText, { color: colors.text + '60' }]}>
-                {mode === 'login' ? 'Pas encore de compte ?' : 'Déjà un compte ?'}
-              </ThemedText>
-              <TouchableOpacity onPress={switchMode} disabled={loading}>
-                <ThemedText style={[styles.switchButton, { color: PRIMARY_COLOR }]}>
-                  {mode === 'login' ? 'S\'inscrire' : 'Se connecter'}
+            {/* Basculer entre connexion et inscription - seulement si pas en mode mot de passe oublié */}
+            {mode !== 'forgotPassword' && (
+              <View style={styles.switchContainer}>
+                <ThemedText style={[styles.switchText, { color: colors.text + '60' }]}>
+                  {mode === 'login' ? 'Pas encore de compte ?' : 'Déjà un compte ?'}
                 </ThemedText>
-              </TouchableOpacity>
-            </View>
+                <TouchableOpacity onPress={switchMode} disabled={loading}>
+                  <ThemedText style={[styles.switchButton, { color: PRIMARY_COLOR }]}>
+                    {mode === 'login' ? 'S\'inscrire' : 'Se connecter'}
+                  </ThemedText>
+                </TouchableOpacity>
+              </View>
+            )}
 
             <View style={{ height: 40 }} />
           </ScrollView>
@@ -603,6 +723,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     textAlign: 'center',
+  },
+  forgotPasswordLink: {
+    alignSelf: 'flex-end',
+    marginTop: -8,
+    marginBottom: 4,
+  },
+  forgotPasswordText: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  description: {
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    marginTop: 16,
+    paddingVertical: 12,
+  },
+  backButtonText: {
+    fontSize: 15,
+    fontWeight: '500',
   },
 });
 

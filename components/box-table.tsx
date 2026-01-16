@@ -280,12 +280,14 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                     </Text>
                   </View>
                 )}
-                <ThemedText style={styles.firstNameText} numberOfLines={1}>
-                  {player.firstName}
-                </ThemedText>
-                <ThemedText style={styles.lastNameText} numberOfLines={1}>
-                  {player.lastName}
-                </ThemedText>
+                <View style={styles.playerNameTextContainer}>
+                  <ThemedText style={[styles.lastNameText, { color: '#0a1629' }]} numberOfLines={1}>
+                    {player.lastName}
+                  </ThemedText>
+                  <ThemedText style={[styles.firstNameText, { color: colors.text + '70' }]} numberOfLines={1}>
+                    {player.firstName}
+                  </ThemedText>
+                </View>
               </View>
             </PlayerComponent>
           );
@@ -322,7 +324,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                 onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
                 activeOpacity={onPlayerPress ? 0.7 : 1}
               >
-                <View style={styles.playerNameContainer}>
+                <View style={styles.playerNameContainerHorizontal}>
                   {player.pictureUrl ? (
                     <Image
                       source={{ uri: player.pictureUrl }}
@@ -340,12 +342,14 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                       </Text>
                     </View>
                   )}
-                  <ThemedText style={styles.firstNameTextVertical} numberOfLines={1}>
-                    {player.firstName}
-                  </ThemedText>
-                  <ThemedText style={styles.lastNameTextVertical} numberOfLines={1}>
-                    {player.lastName}
-                  </ThemedText>
+                  <View style={styles.playerNameTextContainerVertical}>
+                    <ThemedText style={[styles.lastNameTextVertical, { color: '#0a1629' }]} numberOfLines={1}>
+                      {player.lastName}
+                    </ThemedText>
+                    <ThemedText style={[styles.firstNameTextVertical, { color: colors.text + '70' }]} numberOfLines={1}>
+                      {player.firstName}
+                    </ThemedText>
+                  </View>
                 </View>
               </PlayerComponent>
             );
@@ -433,15 +437,15 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E5E7EB',
   },
   cell: {
-    padding: 4,
+    padding: 1,
     justifyContent: 'center',
     alignItems: 'center',
     borderRightWidth: 1,
     borderRightColor: '#E5E7EB',
   },
   headerCell: {
-    minHeight: 50,
-    paddingVertical: 4,
+    minHeight: 45,
+    paddingVertical: 3,
     borderRightWidth: 1,
     borderRightColor: '#E5E7EB',
   },
@@ -458,6 +462,22 @@ const styles = StyleSheet.create({
     gap: 1,
     flex: 1,
     justifyContent: 'center',
+  },
+  playerNameContainerHorizontal: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingLeft: 4,
+  },
+  playerNameTextContainer: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  playerNameTextContainerVertical: {
+    alignItems: 'flex-start',
+    flex: 1,
   },
   avatar: {
     justifyContent: 'center',
@@ -484,37 +504,39 @@ const styles = StyleSheet.create({
   },
   playerHeader: {
     alignItems: 'center',
-    gap: 1,
+    gap: 2,
     justifyContent: 'center',
+    width: '100%',
   },
   firstNameText: {
     fontSize: 7,
     fontWeight: '400',
     textAlign: 'center',
-    lineHeight: 8,
+    lineHeight: 9,
   },
   lastNameText: {
     fontSize: 7,
-    fontWeight: '400',
+    fontWeight: '600',
     textAlign: 'center',
-    lineHeight: 8,
+    lineHeight: 9,
   },
   firstNameTextVertical: {
-    fontSize: 6,
+    fontSize: 7,
     fontWeight: '400',
-    textAlign: 'center',
-    lineHeight: 7,
+    textAlign: 'left',
+    lineHeight: 9,
   },
   lastNameTextVertical: {
-    fontSize: 6,
-    fontWeight: '400',
-    textAlign: 'center',
-    lineHeight: 7,
+    fontSize: 9,
+    fontWeight: '600',
+    textAlign: 'left',
+    lineHeight: 11,
   },
   headerText: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '700',
     textAlign: 'center',
+    letterSpacing: 0.3,
   },
   diagonalCell: {
     backgroundColor: '#000000',
@@ -525,8 +547,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   dataCell: {
-    minHeight: 50,
-    paddingVertical: 4,
+    minHeight: 40,
+    paddingVertical: 2,
   },
   matchText: {
     fontSize: 10,

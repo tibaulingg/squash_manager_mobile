@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router';
-import React, { useEffect, useState } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Platform, StyleSheet, View } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { ThemedText } from '@/components/themed-text';
@@ -15,37 +15,65 @@ export default function TabLayout() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
-  const [liveMatchesCount, setLiveMatchesCount] = useState(0);
+  const [hasLiveMatches, setHasLiveMatches] = useState(false);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Animation du rond pulsant
+  useEffect(() => {
+    if (hasLiveMatches) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.3,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    }
+  }, [hasLiveMatches, pulseAnim]);
 
   // Vérifier s'il y a des matchs en cours
   useEffect(() => {
     const checkLiveMatches = async () => {
       try {
         const matches = await api.getLiveMatches();
-        setLiveMatchesCount(matches.length);
+        setHasLiveMatches(matches.length > 0);
       } catch (error) {
-        setLiveMatchesCount(0);
+        setHasLiveMatches(false);
       }
     };
 
     if (isAuthenticated) {
       checkLiveMatches();
-      // Vérifier toutes les 30 secondes
-      const interval = setInterval(checkLiveMatches, 30000);
+      // Vérifier toutes les 10 secondes
+      const interval = setInterval(checkLiveMatches, 10000);
       return () => clearInterval(interval);
     } else {
-      setLiveMatchesCount(0);
+      setHasLiveMatches(false);
     }
   }, [isAuthenticated]);
 
-  // Composant d'icône avec badge pour l'onglet Box
+  // Composant d'icône avec badge animé pour l'onglet Box (Classement)
   const BoxTabIcon = ({ color }: { color: string }) => (
     <View style={styles.iconContainer}>
       <IconSymbol size={28} name="square.grid.2x2.fill" color={color} />
-      {liveMatchesCount > 0 && (
-        <View style={styles.badge}>
-          <ThemedText style={styles.badgeText}>{liveMatchesCount}</ThemedText>
-        </View>
+      {hasLiveMatches && (
+        <Animated.View
+          style={[
+            styles.liveIndicator,
+            {
+              transform: [{ scale: pulseAnim }],
+            },
+          ]}
+        />
       )}
     </View>
   );
@@ -126,24 +154,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badge: {
+  liveIndicator: {
     position: 'absolute',
-    top: -4,
-    right: -4,
+    top: -2,
+    right: -2,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: '#ef4444',
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
     borderWidth: 2,
     borderColor: '#fff',
-  },
-  badgeText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 16,
   },
 });

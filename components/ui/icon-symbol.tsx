@@ -19,6 +19,8 @@ const MAPPING = {
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
   'face.smiling': 'add-reaction',
+  'person': 'person-outline',
+  'person.fill': 'person',
   'trash': 'delete',
   'square.and.arrow.up': 'share',
   'person.2.fill': 'group',

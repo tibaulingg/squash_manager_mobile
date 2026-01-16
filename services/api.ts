@@ -1,17 +1,21 @@
 import { API_BASE_URL } from '@/constants/config';
 import type { BoxDTO, CommentDTO, EntityType, FollowStatusDTO, MatchCommentDTO, MatchDTO, NotificationDTO, NotificationTokenDTO, PlayerDTO, PlayerFollowDTO, ReactionDTO, SeasonDTO, WaitingListEntryDTO } from '@/types/api';
+import { ApiError, createApiError, createNetworkError } from '@/utils/api-errors';
 
 // Helper pour convertir CommentDTO en MatchCommentDTO (pour compatibilité)
-function convertCommentToMatchComment(comment: CommentDTO, entityType: EntityType, entityId: string): MatchCommentDTO {
+function convertCommentToMatchComment(comment: CommentDTO | any, entityType: EntityType, entityId: string): MatchCommentDTO {
+  // L'API .NET peut retourner les champs en PascalCase, donc on gère les deux formats
+  const created_at = comment.created_at || comment.CreatedAt || comment.createdAt;
+  
   return {
-    id: comment.id,
-    match_id: entityType === 'match' ? entityId : comment.entity_id,
-    player_id: comment.player_id,
-    text: comment.text,
-    created_at: comment.created_at,
-    player: comment.player,
-    entity_type: comment.entity_type,
-    entity_id: comment.entity_id,
+    id: comment.id || comment.Id,
+    match_id: entityType === 'match' ? entityId : (comment.entity_id || comment.EntityId || comment.entityId),
+    player_id: comment.player_id || comment.PlayerId || comment.playerId,
+    text: comment.text || comment.Text,
+    created_at: created_at,
+    player: comment.player || comment.Player,
+    entity_type: comment.entity_type || comment.EntityType || comment.entityType,
+    entity_id: comment.entity_id || comment.EntityId || comment.entityId,
   };
 }
 
@@ -66,15 +70,8 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
         console.error('❌ API Error (logging failed):', logError);
       }
       
-      // Créer un message d'erreur détaillé
-      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-      if (errorJson) {
-        errorMessage = errorJson.message || errorJson.title || errorJson.detail || errorMessage;
-      } else if (text) {
-        errorMessage = text.length > 200 ? text.substring(0, 200) + '...' : text;
-      }
-      
-      throw new Error(errorMessage);
+      // Créer une ApiError avec message utilisateur-friendly
+      throw createApiError(response.status, response.statusText, text, errorJson);
     }
     
     // Gérer les réponses vides (204 No Content)
@@ -84,12 +81,17 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
     
     return JSON.parse(text);
   } catch (error: any) {
-    // Si c'est déjà notre erreur, la relancer
-    if (error.message && error.message.startsWith('HTTP')) {
+    // Si c'est déjà une ApiError, la relancer
+    if (error instanceof ApiError) {
       throw error;
     }
     
-    // Sinon, logger l'erreur réseau
+    // Si c'est une erreur réseau (pas de réponse du serveur)
+    if (error.name === 'TypeError' && (error.message.includes('fetch') || error.message.includes('network'))) {
+      throw createNetworkError(error);
+    }
+    
+    // Sinon, logger l'erreur et créer une erreur générique
     console.error('❌ Network Error:', {
       url,
       method: options?.method || 'GET',
@@ -97,7 +99,7 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
       stack: error.stack,
     });
     
-    throw error;
+    throw createNetworkError(error);
   }
 }
 
@@ -154,15 +156,26 @@ export const api = {
   },
   
   // Joueurs
-  getPlayers: () => fetchApi<PlayerDTO[]>('/Players'),
+  getPlayers: (boxId?: string) => {
+    const params = new URLSearchParams();
+    if (boxId) params.append('box_id', boxId);
+    const queryString = params.toString();
+    return fetchApi<PlayerDTO[]>(`/Players${queryString ? `?${queryString}` : ''}`);
+  },
 
   /**
    * Retourne la liste des joueurs en cache (mémoire) pour éviter les appels répétés.
    * - 1er appel: fetch réseau + cache
    * - appels suivants: renvoie le cache
    * - forceRefresh=true: refetch + remplace le cache
+   * - boxId: optionnel, filtre les joueurs par box_id
    */
-  getPlayersCached: (forceRefresh = false) => {
+  getPlayersCached: (forceRefresh = false, boxId?: string) => {
+    // Si on filtre par box_id, ne pas utiliser le cache global (car il contient tous les joueurs)
+    if (boxId) {
+      return api.getPlayers(boxId);
+    }
+    
     if (!forceRefresh && playersCache) return Promise.resolve(playersCache);
     if (!forceRefresh && playersCachePromise) return playersCachePromise;
 
@@ -183,42 +196,73 @@ export const api = {
     playersCachePromise = null;
   },
   
+  /**
+   * Authentifie un joueur avec email et mot de passe hashé en SHA256
+   * @param email Email du joueur
+   * @param passwordHash Mot de passe hashé en SHA256
+   * @returns Le joueur authentifié
+   */
+  login: (email: string, passwordHash: string) =>
+    fetchApi<PlayerDTO>('/Players/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        Email: email,
+        PasswordHash: passwordHash,
+      }),
+    }),
+
   registerPlayer: (data: {
     first_name: string;
     last_name: string;
     email: string;
     phone: string;
+    password_hash: string;
     schedule_preference?: string;
-    profile_image?: {
-      uri: string;
-      name: string;
-      type: string;
-    };
   }) => {
     const formData = new FormData();
     formData.append('FirstName', data.first_name);
     formData.append('LastName', data.last_name);
     formData.append('Email', data.email);
     formData.append('Phone', data.phone);
+    formData.append('PasswordHash', data.password_hash);
     
     if (data.schedule_preference) {
       formData.append('SchedulePreference', data.schedule_preference);
-    }
-    
-    // N'ajouter ProfileImage que s'il est présent
-    if (data.profile_image) {
-      formData.append('ProfileImage', {
-        uri: data.profile_image.uri,
-        name: data.profile_image.name,
-        type: data.profile_image.type,
-      } as any);
     }
 
     return fetchApi<PlayerDTO>('/Players/register', {
       method: 'POST',
       body: formData,
+      // Ne pas mettre Content-Type, FormData le gère automatiquement avec le boundary
     });
   },
+
+  /**
+   * Demande de réinitialisation de mot de passe
+   * @param email Email du joueur
+   */
+  requestPasswordReset: (email: string) =>
+    fetchApi<{ message: string }>('/Players/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Email: email }),
+    }),
+
+  /**
+   * Réinitialise le mot de passe avec un token
+   * @param token Token de réinitialisation reçu par email
+   * @param newPasswordHash Nouveau mot de passe hashé en SHA256
+   */
+  resetPassword: (token: string, newPasswordHash: string) =>
+    fetchApi<{ message: string }>('/Players/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        Token: token,
+        NewPasswordHash: newPasswordHash,
+      }),
+    }),
   
   updatePlayerNextBoxStatus: (playerId: string, status: string | null) => 
     fetchApi<PlayerDTO>(`/Players/${playerId}/next-box-status`, {
@@ -379,6 +423,14 @@ export const api = {
       }),
     }),
 
+  /**
+   * Récupère la liste de tous les joueurs qui ont réagi (groupés par type de réaction)
+   * @param entityType Type d'entité ('match', 'membership', etc.)
+   * @param entityId ID de l'entité
+   */
+  getReactionPlayers: (entityType: EntityType, entityId: string) =>
+    fetchApi<{ [reactionType: string]: PlayerDTO[] }>(`/Reactions/${entityType}/${entityId}/players`),
+
   // ============================================
   // COMMENTAIRES - API unifiée
   // ============================================
@@ -389,9 +441,16 @@ export const api = {
    * @param entityId ID de l'entité
    */
   getComments: (entityType: EntityType, entityId: string) =>
-    fetchApi<CommentDTO[]>(`/Comments/${entityType}/${entityId}`).then(comments => 
-      comments.map(comment => convertCommentToMatchComment(comment, entityType, entityId))
-    ),
+    fetchApi<CommentDTO[]>(`/Comments/${entityType}/${entityId}`).then(comments => {
+      const commentsAny = comments as any[];
+      return commentsAny
+        .filter((comment) => {
+          // L'API peut retourner les champs en PascalCase, donc on gère les deux formats
+          const commentType = comment.entity_type || comment.EntityType || comment.entityType;
+          return commentType === entityType;
+        })
+        .map((comment) => convertCommentToMatchComment(comment, entityType, entityId));
+    }),
 
   /**
    * Récupère les commentaires pour plusieurs entités en batch
@@ -411,9 +470,18 @@ export const api = {
       const result: { [entityId: string]: MatchCommentDTO[] } = {};
       Object.entries(data).forEach(([entityId, comments]) => {
         const entity = entities.find(e => e.id === entityId);
-        result[entityId] = comments.map(comment => 
-          convertCommentToMatchComment(comment, entity?.type || 'match', entityId)
-        );
+        const expectedType = entity?.type || 'match';
+        // Filtrer les commentaires pour ne garder que ceux du bon type (exclure 'conversation')
+        const commentsAny = comments as any[];
+        result[entityId] = commentsAny
+          .filter((comment) => {
+            // L'API peut retourner les champs en PascalCase, donc on gère les deux formats
+            const commentType = comment.entity_type || comment.EntityType || comment.entityType;
+            return commentType === expectedType;
+          })
+          .map((comment) => 
+            convertCommentToMatchComment(comment, expectedType, entityId)
+          );
       });
       return result;
     }),

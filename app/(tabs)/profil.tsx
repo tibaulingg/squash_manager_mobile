@@ -9,6 +9,7 @@ import { AuthModal } from '@/components/auth-modal';
 import { PlayerAvatar } from '@/components/player-avatar';
 import { EditProfileForm } from '@/components/profile/edit-profile-form';
 import { ReactionAnimation } from '@/components/reaction-animation';
+import { ReactionsDisplay } from '@/components/reactions-display';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -144,11 +145,18 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
   const [matchComments, setMatchComments] = useState<{ [matchId: string]: MatchCommentDTO[] }>({});
   const [commentTexts, setCommentTexts] = useState<{ [matchId: string]: string }>({});
   const [postingComment, setPostingComment] = useState<Set<string>>(new Set());
-  const [showReactions, setShowReactions] = useState<Set<string>>(new Set());
-  const [showComments, setShowComments] = useState<Set<string>>(new Set());
+  const [showCommentInput, setShowCommentInput] = useState<Set<string>>(new Set());
+  const [showReactionsPicker, setShowReactionsPicker] = useState<Set<string>>(new Set());
   const [activeAnimations, setActiveAnimations] = useState<{ [matchId: string]: string | null }>({});
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [reactionPlayersModal, setReactionPlayersModal] = useState<{
+    visible: boolean;
+    entityType: 'match';
+    entityId: string;
+  } | null>(null);
+  const [reactionPlayersByType, setReactionPlayersByType] = useState<{ [reactionType: string]: PlayerDTO[] }>({});
+  const [loadingReactionPlayers, setLoadingReactionPlayers] = useState(false);
   const [editForm, setEditForm] = useState({
     email: '',
     phone: '',
@@ -750,6 +758,9 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
         return;
       }
       
+      // Invalider le cache des joueurs pour que l'appbar se mette à jour
+      api.clearPlayersCache();
+      
       // Mettre à jour l'état local uniquement
       setCurrentPlayer({
         ...currentPlayer,
@@ -809,6 +820,9 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
         schedule_preference: editForm.schedulePreference,
         profile_image: newProfileImage || undefined,
       });
+      
+      // Invalider le cache des joueurs pour que l'appbar se mette à jour
+      api.clearPlayersCache();
       
       // Recharger les données
       await loadData();
@@ -918,12 +932,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
         };
       });
       
-      // Fermer le panneau de réactions
-      setShowReactions(prev => {
-        const next = new Set(prev);
-        next.delete(matchId);
-        return next;
-      });
+      // Le panneau de réactions est géré par le composant ReactionsDisplay
       
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
@@ -964,34 +973,36 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
     }
   };
 
-  const handleLoadComments = async (matchId: string) => {
-    try {
-      // Utiliser l'API unifiée pour les commentaires
-      const comments = await api.getComments('match', matchId);
-      setMatchComments(prev => ({ ...prev, [matchId]: comments }));
-      return comments;
-    } catch (error) {
-      console.error('Erreur chargement commentaires:', error);
-      return matchComments[matchId] || [];
-    }
-  };
 
   const handleDeleteComment = async (commentId: string, matchId: string) => {
     if (!currentPlayer) return;
     
-    try {
-      // Utiliser l'API unifiée pour les commentaires
-      await api.deleteComment(commentId, currentPlayer.id);
-      
-      // Mettre à jour les commentaires locaux
-      setMatchComments(prev => ({
-        ...prev,
-        [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
-      }));
-    } catch (error: any) {
-      console.error('Erreur suppression commentaire:', error);
-      Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
-    }
+    Alert.alert(
+      'Supprimer le commentaire',
+      'Êtes-vous sûr de vouloir supprimer ce commentaire ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Utiliser l'API unifiée pour les commentaires
+              await api.deleteComment(commentId, currentPlayer.id);
+              
+              // Mettre à jour les commentaires locaux
+              setMatchComments(prev => ({
+                ...prev,
+                [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
+              }));
+            } catch (error: any) {
+              console.error('Erreur suppression commentaire:', error);
+              Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
+            }
+          },
+        },
+      ]
+    );
   };
 
 
@@ -1165,7 +1176,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
             </TouchableOpacity>
           )}
           {isModal && (
-            <View style={styles.modalHeaderButtons}>
+            <View style={[styles.modalHeaderButtons, { backgroundColor: colors.background }]}>
               {user && currentPlayer && user.id !== currentPlayer.id && onStartChat && (
                 <TouchableOpacity
                   style={[styles.chatIconButton, { backgroundColor: PRIMARY_COLOR + '15' }]}
@@ -1180,11 +1191,11 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               )}
               {onClose && (
                 <TouchableOpacity
-                  style={[styles.editIconButton, styles.editIconButtonRight, { backgroundColor: colors.text + '08' }]}
+                  style={[styles.chatIconButton, { backgroundColor: colors.text + '08' }]}
                   onPress={onClose}
                   activeOpacity={0.7}
                 >
-                  <IconSymbol name="xmark" size={28} color={colors.text} />
+                  <IconSymbol name="xmark" size={24} color={colors.text} />
                 </TouchableOpacity>
               )}
             </View>
@@ -2065,128 +2076,186 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                               {formatDate(match.date)}
                             </ThemedText>
                           </View>
-                          <View
-                            style={[
-                              styles.matchHistoryScore,
-                              { 
-                                backgroundColor: (() => {
-                                  if (!currentPlayer) return colors.text + '10';
-                                  const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
-                                  return specialStatus.backgroundColor;
-                                })()
-                              },
-                            ]}
-                          >
-                            <ThemedText
+                          
+                          {/* Boutons actions à droite */}
+                          <View style={styles.matchHistoryRight}>
+                            {/* Boutons emoji et commentaire */}
+                            {currentPlayer && (
+                              <View style={styles.reactionsActionsLeft}>
+                                {/* Bouton emoji pour ajouter une réaction */}
+                                <TouchableOpacity
+                                  style={[
+                                    styles.reactionAddButton,
+                                    { 
+                                      borderColor: colors.text + '20',
+                                      backgroundColor: colors.text + '08',
+                                    }
+                                  ]}
+                                  onPress={() => {
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    setShowReactionsPicker(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(matchId)) {
+                                        next.delete(matchId);
+                                      } else {
+                                        next.add(matchId);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <IconSymbol name="face.smiling.fill" size={14} color={colors.text + '70'} />
+                                </TouchableOpacity>
+
+                                {/* Bouton commentaire */}
+                                <TouchableOpacity
+                                  style={[
+                                    styles.reactionAddButton,
+                                    { 
+                                      borderColor: colors.text + '20',
+                                      backgroundColor: colors.text + '08',
+                                      flexDirection: 'row',
+                                      alignItems: 'center',
+                                      paddingHorizontal: commentsCount > 0 ? 6 : 0,
+                                      gap: 2,
+                                    }
+                                  ]}
+                                  onPress={() => {
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    setShowCommentInput(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(matchId)) {
+                                        next.delete(matchId);
+                                      } else {
+                                        next.add(matchId);
+                                        if (!matchComments[matchId]) {
+                                          // Charger les commentaires si pas encore chargés
+                                          api.getComments('match', matchId).then(comments => {
+                                            setMatchComments(prev => ({ ...prev, [matchId]: comments }));
+                                          }).catch(console.error);
+                                        }
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <IconSymbol name="bubble.left" size={14} color={colors.text + '70'} />
+                                  {commentsCount > 0 && (
+                                    <ThemedText style={[styles.reactionCount, { color: colors.text + '70' }]}>
+                                      {commentsCount}
+                                    </ThemedText>
+                                  )}
+                                </TouchableOpacity>
+                              </View>
+                            )}
+
+                            {/* Score */}
+                            <View
                               style={[
-                                styles.matchHistoryScoreText,
+                                styles.matchHistoryScore,
                                 { 
-                                  color: (() => {
-                                    if (!currentPlayer) return colors.text;
+                                  backgroundColor: (() => {
+                                    if (!currentPlayer) return colors.text + '10';
                                     const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
-                                    return specialStatus.textColor;
+                                    return specialStatus.backgroundColor;
                                   })()
                                 },
                               ]}
                             >
-                              {(() => {
-                                if (!currentPlayer) return match.score;
-                                const [playerScore, opponentScore] = match.score.split('-').map(Number);
-                                return formatMatchScore(match.matchData, currentPlayer.id, playerScore, opponentScore);
-                              })()}
-                            </ThemedText>
+                              <ThemedText
+                                style={[
+                                  styles.matchHistoryScoreText,
+                                  { 
+                                    color: (() => {
+                                      if (!currentPlayer) return colors.text;
+                                      const specialStatus = getMatchSpecialStatus(match.matchData, currentPlayer.id, match.won);
+                                      return specialStatus.textColor;
+                                    })()
+                                  },
+                                ]}
+                              >
+                                {(() => {
+                                  if (!currentPlayer) return match.score;
+                                  const [playerScore, opponentScore] = match.score.split('-').map(Number);
+                                  return formatMatchScore(match.matchData, currentPlayer.id, playerScore, opponentScore);
+                                })()}
+                              </ThemedText>
+                            </View>
                           </View>
                         </View>
 
-                        {/* Footer avec boutons d'action à gauche et réactions à droite */}
-                        {currentPlayer && (
-                          <View style={[styles.matchHistoryFooter, { borderTopColor: colors.text + '15' }]}>
-                            <View style={styles.actionsContainer}>
-                              {/* Bouton pour ouvrir le panneau de réactions */}
-                              <TouchableOpacity
-                                style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
-                                onPress={() => {
-                                  setShowReactions(prev => {
-                                    const next = new Set(prev);
-                                    if (next.has(matchId)) {
-                                      next.delete(matchId);
-                                    } else {
-                                      next.add(matchId);
-                                    }
-                                    return next;
-                                  });
-                                }}
-                                activeOpacity={0.7}
-                              >
-                                <IconSymbol name="face.smiling" size={14} color={colors.text + '80'} />
-                              </TouchableOpacity>
-
-                              {/* Bouton commenter */}
-                              <TouchableOpacity
-                                style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
-                                onPress={() => {
-                                  setShowComments(prev => {
-                                    const next = new Set(prev);
-                                    if (next.has(matchId)) {
-                                      next.delete(matchId);
-                                    } else {
-                                      next.add(matchId);
-                                      if (!matchComments[matchId]) {
-                                        handleLoadComments(matchId);
-                                      }
-                                    }
-                                    return next;
-                                  });
-                                }}
-                                activeOpacity={0.7}
-                              >
-                                <IconSymbol name="bubble.left" size={13} color={colors.text + '80'} />
-                                {commentsCount > 0 && (
-                                  <ThemedText style={[styles.toggleButtonText, { color: colors.text + '80' }]}>
-                                    {commentsCount}
-                                  </ThemedText>
-                                )}
-                              </TouchableOpacity>
-                            </View>
-
-                            {/* Résumé des réactions - toujours affiché à droite */}
-                            {totalReactions > 0 && (
-                              <View style={styles.reactionsSummary}>
-                                {REACTIONS.map((reaction) => {
-                                  const count = matchReactionsData[reaction.name] || 0;
-                                  if (count === 0) return null;
-                                  return (
-                                    <View key={reaction.name} style={[styles.reactionBadge, { backgroundColor: colors.text + '08' }]}>
-                                      <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
-                                      <ThemedText style={[styles.reactionCount, { color: colors.text, opacity: 0.7 }]}>
-                                        {count}
-                                      </ThemedText>
-                                    </View>
-                                  );
-                                })}
-                              </View>
-                            )}
-                          </View>
-                        )}
-
-                        {/* Section réactions - panneau avec tous les boutons, affiché si toggle activé */}
-                        {currentPlayer && showReactions.has(matchId) && (
-                          <View style={[styles.reactionsSection, { borderTopColor: colors.text + '15' }]}>
-                            <View style={styles.reactionsContainer}>
+                        {/* Réactions existantes - affichées en dessous si elles existent */}
+                        {currentPlayer && totalReactions > 0 && (
+                          <View style={[styles.reactionsContainerCompact, { borderTopWidth: 1, borderTopColor: colors.text + '15' }]}>
+                            <View style={styles.reactionsBadgesRight}>
                               {REACTIONS.map((reaction) => {
-                                const isActive = userReaction === reaction.name;
+                                const count = matchReactionsData[reaction.name] || 0;
+                                if (count === 0) return null;
+                                
+                                const hasThisReaction = userReaction === reaction.name;
+                                
                                 return (
                                   <TouchableOpacity
                                     key={reaction.name}
                                     style={[
-                                      styles.reactionButton,
-                                      isActive && [
-                                        styles.reactionButtonActive,
-                                        { backgroundColor: colors.text + '15' },
-                                      ],
-                                      { borderColor: colors.text + '20' },
+                                      styles.reactionBadge,
+                                      { 
+                                        borderColor: hasThisReaction ? PRIMARY_COLOR + '80' : colors.text + '20',
+                                        borderWidth: hasThisReaction ? 1.5 : 1,
+                                        backgroundColor: hasThisReaction ? PRIMARY_COLOR + '20' : colors.text + '08',
+                                      }
                                     ]}
                                     onPress={() => handleReaction(matchId, reaction.name)}
+                                    onLongPress={async () => {
+                                      try {
+                                        const playersByType = await api.getReactionPlayers('match', matchId);
+                                        setReactionPlayersModal({
+                                          visible: true,
+                                          entityType: 'match',
+                                          entityId: matchId,
+                                        });
+                                        setReactionPlayersByType(playersByType);
+                                      } catch (error) {
+                                        console.error('Erreur chargement joueurs réaction:', error);
+                                        Alert.alert('Erreur', 'Impossible de charger la liste des joueurs');
+                                      }
+                                    }}
+                                    activeOpacity={0.7}
+                                  >
+                                    <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
+                                    <ThemedText style={[styles.reactionCount, { color: colors.text + (hasThisReaction ? '90' : '70') }]}>
+                                      {count}
+                                    </ThemedText>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        )}
+
+                        {/* Panneau de réactions (picker) */}
+                        {currentPlayer && showReactionsPicker.has(matchId) && (
+                          <View style={[styles.reactionsPanel, { borderTopColor: colors.text + '10' }]}>
+                            <View style={styles.reactionsPickerContainer}>
+                              {REACTIONS.map((reaction) => {
+                                const hasThisReaction = userReaction === reaction.name;
+                                return (
+                                  <TouchableOpacity
+                                    key={reaction.name}
+                                    style={[
+                                      styles.reactionPickerButton,
+                                      hasThisReaction && { backgroundColor: colors.text + '15' },
+                                    ]}
+                                    onPress={() => {
+                                      handleReaction(matchId, reaction.name);
+                                      setShowReactionsPicker(prev => {
+                                        const next = new Set(prev);
+                                        next.delete(matchId);
+                                        return next;
+                                      });
+                                    }}
                                     activeOpacity={0.7}
                                   >
                                     <ThemedText style={styles.reactionEmojiButton}>{reaction.emoji}</ThemedText>
@@ -2197,12 +2266,22 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                           </View>
                         )}
 
-                        {/* Section commentaires - affichée si toggle activé */}
-                        {currentPlayer && showComments.has(matchId) && (
-                          <View style={[styles.commentsSection, { borderTopColor: colors.text + '15' }]}>
-                            {/* Liste des commentaires */}
+                        {/* Commentaires et input - affichés uniquement si toggle activé */}
+                        {currentPlayer && showCommentInput.has(matchId) && (
+                          <>
+                            {/* Séparateur entre réactions et commentaires */}
+                            {totalReactions > 0 && comments.length > 0 && (
+                              <View style={[styles.reactionsCommentsSeparator, { borderTopColor: colors.text + '10' }]} />
+                            )}
+
+                            {/* Séparateur entre le post et les commentaires (si pas de réactions) */}
+                            {totalReactions === 0 && comments.length > 0 && (
+                              <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
+                            )}
+
+                            {/* Commentaires - affichés quand toggle activé */}
                             {comments.length > 0 && (
-                              <View style={styles.commentsList}>
+                              <View style={styles.commentsSection}>
                                 {comments.map((comment) => {
                                   // Vérifier si le commentaire appartient à l'utilisateur actuel
                                   const isOwnComment = currentPlayer && (
@@ -2211,81 +2290,98 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                                   );
                                   return (
                                     <View key={comment.id} style={styles.commentItem}>
-                                      <View style={styles.avatarContainer}>
+                                      <TouchableOpacity
+                                        onPress={() => {
+                                          // Optionnel: naviguer vers le profil du joueur
+                                        }}
+                                        activeOpacity={0.7}
+                                      >
                                         <PlayerAvatar
                                           firstName={comment.player.first_name}
                                           lastName={comment.player.last_name}
                                           pictureUrl={comment.player.picture}
-                                          size={28}
+                                          size={32}
                                         />
-                                      </View>
-                                      <View style={styles.commentContent}>
+                                      </TouchableOpacity>
+                                      <View style={styles.commentBubbleContainer}>
                                         <View style={[styles.commentBubble, { backgroundColor: colors.text + '08' }]}>
-                                          <ThemedText style={[styles.commentAuthor, { color: colors.text }]}>
-                                            {comment.player.first_name} {comment.player.last_name}
-                                          </ThemedText>
-                                          <ThemedText style={[styles.commentText, { color: colors.text }]}>
+                                          <TouchableOpacity
+                                            onPress={() => {
+                                              // Optionnel: naviguer vers le profil du joueur
+                                            }}
+                                            activeOpacity={0.7}
+                                          >
+                                            <ThemedText style={[styles.commentAuthor, { color: colors.text, fontWeight: '600' }]}>
+                                              {comment.player.first_name} {comment.player.last_name}
+                                            </ThemedText>
+                                          </TouchableOpacity>
+                                          <ThemedText style={[styles.commentTextContent, { color: colors.text }]}>
                                             {comment.text}
                                           </ThemedText>
                                         </View>
                                         {comment.created_at && (
-                                          <ThemedText style={[styles.commentDate, { color: colors.text, opacity: 0.5 }]}>
+                                          <ThemedText style={[styles.commentDate, { color: colors.text + '50' }]}>
                                             {formatCommentDate(new Date(comment.created_at))}
                                           </ThemedText>
                                         )}
                                       </View>
-                                      {isOwnComment ? (
+                                      {isOwnComment && (
                                         <TouchableOpacity
                                           style={styles.commentDeleteButton}
                                           onPress={() => handleDeleteComment(comment.id, matchId)}
                                           activeOpacity={0.7}
                                         >
-                                          <IconSymbol name="trash" size={16} color={colors.text + '80'} />
+                                          <IconSymbol name="trash" size={14} color={colors.text + '60'} />
                                         </TouchableOpacity>
-                                      ) : null}
+                                      )}
                                     </View>
                                   );
                                 })}
                               </View>
                             )}
 
+                            {/* Séparateur avant le champ de commentaire (si pas de réactions et pas de commentaires existants) */}
+                            {totalReactions === 0 && comments.length === 0 && (
+                              <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
+                            )}
+
                             {/* Champ de saisie de commentaire */}
-                            <View style={styles.commentInputContainer}>
-                              <TextInput
-                                style={[
-                                  styles.commentInput,
-                                  {
-                                    backgroundColor: colors.text + '08',
-                                    color: colors.text,
-                                    borderColor: colors.text + '20',
-                                  },
-                                ]}
-                                placeholder="Ajouter un commentaire..."
-                                placeholderTextColor={colors.text + '60'}
-                                value={commentTexts[matchId] || ''}
-                                onChangeText={(text) =>
-                                  setCommentTexts(prev => ({ ...prev, [matchId]: text }))
-                                }
-                                multiline
-                                maxLength={500}
-                                textAlignVertical="top"
-                              />
-                              <TouchableOpacity
-                                style={[
-                                  styles.commentSendButton,
-                                  {
-                                    backgroundColor: PRIMARY_COLOR,
-                                    opacity: (commentTexts[matchId]?.trim() && !postingComment.has(matchId)) ? 1 : 0.5,
-                                  },
-                                ]}
-                                onPress={() => handlePostComment(matchId)}
-                                disabled={!commentTexts[matchId]?.trim() || postingComment.has(matchId)}
-                                activeOpacity={0.7}
-                              >
-                                <IconSymbol name="paperplane.fill" size={16} color="#fff" />
-                              </TouchableOpacity>
-                            </View>
+                            <View style={[styles.commentInputSection, { borderTopColor: comments.length > 0 ? colors.text + '10' : 'transparent' }]}>
+                            <TextInput
+                              style={[
+                                styles.commentInput,
+                                {
+                                  backgroundColor: colors.text + '08',
+                                  color: colors.text,
+                                  borderColor: colors.text + '20',
+                                },
+                              ]}
+                              placeholder="Ajouter un commentaire..."
+                              placeholderTextColor={colors.text + '60'}
+                              value={commentTexts[matchId] || ''}
+                              onChangeText={(text) =>
+                                setCommentTexts(prev => ({ ...prev, [matchId]: text }))
+                              }
+                              multiline
+                              maxLength={500}
+                              textAlignVertical="top"
+                            />
+                            <TouchableOpacity
+                              style={[
+                                styles.commentSendButton,
+                                {
+                                  backgroundColor: PRIMARY_COLOR,
+                                  opacity: (commentTexts[matchId]?.trim() && !postingComment.has(matchId)) ? 1 : 0.5,
+                                },
+                              ]}
+                              onPress={() => handlePostComment(matchId)}
+                              disabled={!commentTexts[matchId]?.trim() || postingComment.has(matchId)}
+                              activeOpacity={0.7}
+                            >
+                              <IconSymbol name="paperplane.fill" size={16} color="#fff" />
+                            </TouchableOpacity>
                           </View>
+                          </>
                         )}
                       </View>
                     );
@@ -2565,6 +2661,105 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
           </ScrollView>
         </ThemedView>
       </Modal>
+
+      {/* Modal pour afficher les joueurs qui ont réagi */}
+      <Modal
+        visible={reactionPlayersModal?.visible || false}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setReactionPlayersModal(null);
+          setReactionPlayersByType({});
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            setReactionPlayersModal(null);
+            setReactionPlayersByType({});
+          }}
+        >
+          <View
+            style={[styles.reactionPlayersModal, { backgroundColor: colors.background }]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.reactionPlayersModalHeader}>
+              <ThemedText style={[styles.reactionPlayersModalTitle, { color: colors.text }]}>
+                Réactions
+              </ThemedText>
+              <TouchableOpacity
+                onPress={() => {
+                  setReactionPlayersModal(null);
+                  setReactionPlayersByType({});
+                }}
+                style={styles.reactionPlayersModalCloseButton}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="xmark" size={20} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {loadingReactionPlayers ? (
+              <View style={styles.reactionPlayersModalLoading}>
+                <ActivityIndicator size="large" color={colors.text + '80'} />
+              </View>
+            ) : (
+              <ScrollView style={styles.reactionPlayersModalList}>
+                {(() => {
+                  // Aplatir les données : créer une liste de { player, reactionType }
+                  const playersWithReactions: Array<{ player: PlayerDTO; reactionType: string }> = [];
+                  Object.entries(reactionPlayersByType).forEach(([reactionType, players]) => {
+                    players.forEach(player => {
+                      playersWithReactions.push({ player, reactionType });
+                    });
+                  });
+
+                  // Trier par nom (prénom + nom) en ordre ascendant
+                  playersWithReactions.sort((a, b) => {
+                    const nameA = `${a.player.first_name} ${a.player.last_name}`.toLowerCase();
+                    const nameB = `${b.player.first_name} ${b.player.last_name}`.toLowerCase();
+                    return nameA.localeCompare(nameB);
+                  });
+
+                  return playersWithReactions.map(({ player, reactionType }) => {
+                    const reaction = REACTIONS.find(r => r.name === reactionType);
+                    return (
+                      <TouchableOpacity
+                        key={`${player.id}-${reactionType}`}
+                        style={[styles.reactionPlayerItem, { borderBottomColor: colors.text + '10' }]}
+                        onPress={() => {
+                          setReactionPlayersModal(null);
+                          setReactionPlayersByType({});
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <PlayerAvatar
+                          firstName={player.first_name}
+                          lastName={player.last_name}
+                          pictureUrl={player.picture}
+                          size={40}
+                        />
+                        <View style={styles.reactionPlayerInfo}>
+                          <ThemedText style={[styles.reactionPlayerName, { color: colors.text }]}>
+                            {player.first_name} {player.last_name}
+                          </ThemedText>
+                        </View>
+                        {reaction && (
+                          <ThemedText style={styles.reactionPlayerEmoji}>
+                            {reaction.emoji}
+                          </ThemedText>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  });
+                })()}
+              </ScrollView>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </>
   );
 
@@ -2642,7 +2837,9 @@ const styles = StyleSheet.create({
     right: 0,
     flexDirection: 'row',
     gap: 8,
-    zIndex: 1,
+    zIndex: 10,
+    padding: 4,
+    borderRadius: 16,
   },
   chatIconButton: {
     padding: 8,
@@ -2952,6 +3149,11 @@ const styles = StyleSheet.create({
   matchHistoryLeft: {
     flex: 1,
   },
+  matchHistoryRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   matchHistoryOpponent: {
     fontSize: 16,
     fontWeight: '500',
@@ -3005,6 +3207,55 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  reactionsContainerCompact: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  reactionsActionsLeft: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+  },
+  reactionsBadgesRight: {
+    flexDirection: 'row',
+    gap: 6,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  reactionAddButton: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reactionsPanel: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+  },
+  reactionsPickerContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  reactionPickerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: 'transparent',
+  },
+  reactionEmojiButton: {
+    fontSize: 24,
+  },
   reactionButton: {
     width: 36,
     height: 36,
@@ -3016,16 +3267,7 @@ const styles = StyleSheet.create({
   reactionButtonActive: {
     borderWidth: 2,
   },
-  reactionEmojiButton: {
-    fontSize: 18,
-  },
   reactionsSection: {
-    marginTop: 6,
-    paddingTop: 6,
-    borderTopWidth: 1,
-    gap: 6,
-  },
-  commentsSection: {
     marginTop: 6,
     paddingTop: 6,
     borderTopWidth: 1,
@@ -3046,26 +3288,84 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-  commentsList: {
-    gap: 6,
+  commentsSection: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    gap: 10,
   },
   commentItem: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 4,
     alignItems: 'flex-start',
+    gap: 10,
   },
-  avatarContainer: {
-    paddingTop: 8,
+  commentBubbleContainer: {
+    flex: 1,
+    gap: 4,
+  },
+  commentBubble: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+    gap: 4,
+  },
+  commentAuthor: {
+    fontSize: 14,
+    marginBottom: 2,
+  },
+  commentTextContent: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '400',
+  },
+  commentDate: {
+    fontSize: 11,
+    marginLeft: 4,
+    marginTop: 2,
   },
   commentDeleteButton: {
-    padding: 4,
+    padding: 6,
+    marginTop: 4,
     alignSelf: 'flex-start',
-    marginTop: 8,
-    justifyContent: 'center',
+  },
+  // Input commentaire
+  commentInputSection: {
+    flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 24,
-    minHeight: 24,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+  },
+  commentInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    fontSize: 14,
+    minHeight: 36,
+    maxHeight: 100,
+  },
+  commentSendButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Séparateurs
+  postSeparator: {
+    borderTopWidth: 1,
+    marginTop: 4,
+    marginBottom: 4,
+    marginHorizontal: 16,
+  },
+  reactionsCommentsSeparator: {
+    borderTopWidth: 1,
+    marginTop: 4,
+    marginBottom: 4,
+    marginHorizontal: 16,
   },
   followingList: {
     gap: 0,
@@ -3128,51 +3428,6 @@ const styles = StyleSheet.create({
   followingSectionButtonText: {
     fontSize: 15,
     fontWeight: '600',
-  },
-  commentContent: {
-    flex: 1,
-    gap: 4,
-  },
-  commentBubble: {
-    padding: 8,
-    paddingTop: 6,
-    borderRadius: 10,
-    marginBottom: 2,
-  },
-  commentAuthor: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 1,
-  },
-  commentText: {
-    fontSize: 13,
-    lineHeight: 16,
-  },
-  commentDate: {
-    fontSize: 10,
-    marginTop: 2,
-  },
-  commentInputContainer: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'flex-end',
-  },
-  commentInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 14,
-    minHeight: 40,
-    maxHeight: 100,
-  },
-  commentSendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   settingItem: {
     flexDirection: 'row',
@@ -3567,5 +3822,86 @@ const styles = StyleSheet.create({
   modalMatchScoreText: {
     fontSize: 14,
     fontWeight: '700',
+  },
+  // Modal réactions
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reactionPlayersModal: {
+    width: '85%',
+    maxHeight: '70%',
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  reactionPlayersModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+  },
+  reactionPlayersModalTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  reactionPlayersModalEmoji: {
+    fontSize: 24,
+  },
+  reactionPlayersModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  reactionPlayersModalCloseButton: {
+    padding: 4,
+  },
+  reactionPlayersModalLoading: {
+    padding: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reactionPlayersModalList: {
+    maxHeight: 400,
+  },
+  reactionPlayerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  reactionPlayerInfo: {
+    flex: 1,
+  },
+  reactionPlayerName: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  reactionPlayerEmoji: {
+    fontSize: 20,
+  },
+  reactionGroup: {
+    marginBottom: 16,
+  },
+  reactionGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  reactionGroupEmoji: {
+    fontSize: 20,
+  },
+  reactionGroupTitle: {
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

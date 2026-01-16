@@ -136,7 +136,7 @@ export interface ReactionDTO {
 }
 
 // Types de notifications
-export type NotificationType = 'membership_added' | 'match_comment' | 'match_started' | 'match_played';
+export type NotificationType = 'membership_added' | 'match_comment' | 'match_started' | 'match_played' | 'conversation_message';
 
 // Notification
 export interface NotificationDTO {

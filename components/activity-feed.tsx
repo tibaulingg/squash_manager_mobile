@@ -1,7 +1,6 @@
-import { LinearGradient } from 'expo-linear-gradient';
 import type { ComponentProps } from 'react';
-import React, { useEffect, useState } from 'react';
-import { StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Keyboard, Modal, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { PlayerAvatar } from '@/components/player-avatar';
 import { ReactionAnimation } from '@/components/reaction-animation';
@@ -11,7 +10,7 @@ import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { MatchDTO, PlayerDTO } from '@/types/api';
-import { formatMatchScore, type MatchSpecialStatus } from '@/utils/match-helpers';
+import { type MatchSpecialStatus } from '@/utils/match-helpers';
 
 interface ActivityFeedMatchItem {
   type: 'match';
@@ -55,6 +54,7 @@ interface ActivityFeedProps {
   onComment?: (itemId: string, text: string, entityType: 'match' | 'membership') => Promise<void>;
   onLoadComments?: (itemId: string, entityType: 'match' | 'membership') => Promise<MatchCommentDTO[]>;
   onDeleteComment?: (commentId: string, itemId: string) => Promise<void>;
+  onInputFocus?: (inputRef: React.RefObject<View>) => void;
 }
 
 const REACTIONS = [
@@ -105,6 +105,7 @@ export function ActivityFeed({
   onComment,
   onLoadComments,
   onDeleteComment,
+  onInputFocus,
 }: ActivityFeedProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
@@ -115,6 +116,16 @@ export function ActivityFeed({
   const [showCommentInput, setShowCommentInput] = useState<Set<string>>(new Set());
   const [activeAnimations, setActiveAnimations] = useState<{ [itemId: string]: string | null }>({});
   const [commentsLoaded, setCommentsLoaded] = useState(false);
+  const [reactionPlayersModal, setReactionPlayersModal] = useState<{
+    visible: boolean;
+    entityType: 'match' | 'membership';
+    entityId: string;
+  } | null>(null);
+  const [reactionPlayersByType, setReactionPlayersByType] = useState<{ [reactionType: string]: PlayerDTO[] }>({});
+  const [loadingReactionPlayers, setLoadingReactionPlayers] = useState(false);
+  const [userReactionsByType, setUserReactionsByType] = useState<{ [itemId: string]: Set<string> }>({});
+  const inputRefs = useRef<{ [itemId: string]: React.RefObject<View> }>({});
+  const inputYPositions = useRef<{ [itemId: string]: number }>({});
   
   // Charger tous les commentaires en batch (1 seule requête) au montage
   useEffect(() => {
@@ -268,7 +279,7 @@ export function ActivityFeed({
                 index !== matches.length - 1 && styles.postSpacing,
               ]}
             >
-              {/* Header du post - Avatar + Nom + Date + Badge Statut */}
+              {/* Header du post - Avatar + Nom + Date */}
               <View style={styles.postHeader}>
                 <TouchableOpacity
                   style={styles.postHeaderLeft}
@@ -291,129 +302,146 @@ export function ActivityFeed({
                     </ThemedText>
                   </View>
                 </TouchableOpacity>
-                
-                {/* Badge Statut à droite */}
-                <View
-                  style={[
-                    styles.statusBadge,
-                    {
-                      backgroundColor: statusColor + '15',
-                    },
-                  ]}
-                >
-                  <IconSymbol name={statusIcon as ComponentProps<typeof IconSymbol>['name']} size={14} color={statusColor} />
-                  <ThemedText style={[styles.statusText, { color: statusColor }]}>
-                    {statusText}
-                  </ThemedText>
+              </View>
+
+              {/* Contenu du changement de statut */}
+              <View style={styles.postContent}>
+                <View style={[styles.statusContentContainer, { backgroundColor: statusColor + '10' }]}>
+                  <View style={[styles.statusIconContainer, { backgroundColor: statusColor + '20' }]}>
+                    <IconSymbol name={statusIcon as ComponentProps<typeof IconSymbol>['name']} size={20} color={statusColor} />
+                  </View>
+                  <View style={styles.statusTextContainer}>
+                    <ThemedText style={[styles.statusSubtitle, { color: colors.text + '70' }]}>
+                      {item.status === 'continue' 
+                        ? `${item.player.first_name} s'est réinscrit à la prochaine série de box` 
+                        : `${item.player.first_name} ne continue pas pour la prochaine série de box`}
+                    </ThemedText>
+                  </View>
                 </View>
               </View>
 
-              {/* Séparateur */}
-              {(onReaction || onComment) && (
-                <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
-              )}
-
-              {/* Actions (Réactions et Commentaires) */}
-              {(onReaction || onComment) && (
-                <View style={styles.postActions}>
-                  <View style={styles.postActionsLeft}>
-                    {/* Bouton réactions */}
-                    {onReaction && (
+              {/* Réactions style Discord - toujours visibles */}
+              {onReaction && totalStatusReactions > 0 && (
+                <>
+                  {/* Séparateur entre le post et les réactions */}
+                  <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
+                <View style={[styles.reactionsContainer, { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }]}>
+                  {/* Afficher toutes les réactions existantes */}
+                  {REACTIONS.map((reaction) => {
+                    const count = statusReactions[reaction.name] || 0;
+                    if (count === 0) return null;
+                    // Vérifier si l'utilisateur a cette réaction spécifique
+                    // Utiliser userStatusReaction directement (une seule réaction pour l'instant) ou userReactionsByType si disponible
+                    const userReactionsForItem = userReactionsByType[membershipId] || new Set<string>();
+                    const hasThisReaction = userStatusReaction === reaction.name || userReactionsForItem.has(reaction.name);
+                    return (
                       <TouchableOpacity
-                        style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
-                        onPress={() => {
-                          setShowReactions(prev => {
-                            const next = new Set(prev);
-                            if (next.has(membershipId)) {
-                              next.delete(membershipId);
-                            } else {
-                              next.add(membershipId);
+                        key={reaction.name}
+                        style={[
+                          styles.reactionBadge,
+                          { 
+                            borderColor: hasThisReaction ? PRIMARY_COLOR + '80' : colors.text + '20',
+                            borderWidth: hasThisReaction ? 1.5 : 1,
+                            backgroundColor: hasThisReaction ? PRIMARY_COLOR + '20' : colors.text + '08',
+                          }
+                        ]}
+                        onPress={async () => {
+                          // Toggle: si on a déjà cette réaction, la retirer, sinon l'ajouter
+                          onReaction?.(membershipId, reaction.name, 'status');
+                        }}
+                        onLongPress={async () => {
+                          // Long press pour voir qui a réagi
+                          try {
+                            setLoadingReactionPlayers(true);
+                            setReactionPlayersModal({
+                              visible: true,
+                              entityType: 'membership',
+                              entityId: membershipId,
+                            });
+                            const playersByType = await api.getReactionPlayers('membership', membershipId);
+                            setReactionPlayersByType(playersByType);
+                            
+                            // Mettre à jour userReactionsByType pour savoir quelles réactions l'utilisateur a
+                            if (currentPlayerId) {
+                              const userReactionsSet = new Set<string>();
+                              Object.entries(playersByType).forEach(([reactionType, players]) => {
+                                if (players.some(p => p.id === currentPlayerId)) {
+                                  userReactionsSet.add(reactionType);
+                                }
+                              });
+                              setUserReactionsByType(prev => ({
+                                ...prev,
+                                [membershipId]: userReactionsSet,
+                              }));
                             }
-                            return next;
-                          });
+                          } catch (error) {
+                            console.error('Erreur chargement joueurs réaction:', error);
+                            Alert.alert('Erreur', 'Impossible de charger la liste des joueurs');
+                            setReactionPlayersModal(null);
+                          } finally {
+                            setLoadingReactionPlayers(false);
+                          }
                         }}
                         activeOpacity={0.7}
                       >
-                        <IconSymbol 
-                          name={userStatusReaction ? "face.smiling.fill" : "face.smiling"} 
-                          size={18} 
-                          color={userStatusReaction ? PRIMARY_COLOR : colors.text + '80'} 
-                        />
+                        <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
+                        <ThemedText style={[styles.reactionCount, { color: colors.text + (hasThisReaction ? '90' : '70') }]}>
+                          {count}
+                        </ThemedText>
                       </TouchableOpacity>
-                    )}
-                    
-                    {/* Bouton commentaires */}
-                    {onComment && (
-                      <TouchableOpacity
-                        style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
-                        onPress={() => {
-                          setShowCommentInput(prev => {
-                            const next = new Set(prev);
-                            const isOpening = !next.has(membershipId);
-                            if (isOpening) {
-                              next.add(membershipId);
-                              if (onLoadComments && !matchComments[membershipId]) {
-                                onLoadComments(membershipId, 'membership')
-                                  .then((comments) => {
-                                    setMatchComments(prevComments => ({ ...prevComments, [membershipId]: comments }));
-                                  })
-                                  .catch((error) => {
-                                    console.error('Erreur chargement commentaires membership:', error);
-                                  });
-                              }
-                            } else {
-                              next.delete(membershipId);
-                            }
-                            return next;
-                          });
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <IconSymbol 
-                          name="bubble.left" 
-                          size={18} 
-                          color={colors.text + '80'} 
-                        />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-
-                  {/* Résumé des réactions */}
-                  {totalStatusReactions > 0 && (
-                    <View style={styles.reactionsSummary}>
-                      {REACTIONS.map((reaction) => {
-                        const count = statusReactions[reaction.name] || 0;
-                        if (count === 0) return null;
-                        return (
-                          <View key={reaction.name} style={[styles.reactionBadge, { borderColor: colors.text + '20' }]}>
-                            <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
-                            {count > 1 && (
-                              <ThemedText style={[styles.reactionCount, { color: colors.text + '70' }]}>
-                                {count}
-                              </ThemedText>
-                            )}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  )}
+                    );
+                  })}
+                  
+                  {/* Bouton + pour ajouter une réaction */}
+                  <TouchableOpacity
+                    style={[
+                      styles.reactionAddButton,
+                      { 
+                        borderColor: colors.text + '20',
+                        backgroundColor: colors.text + '08',
+                      }
+                    ]}
+                    onPress={() => {
+                      setShowReactions(prev => {
+                        const next = new Set(prev);
+                        if (next.has(membershipId)) {
+                          next.delete(membershipId);
+                        } else {
+                          next.add(membershipId);
+                        }
+                        return next;
+                      });
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <ThemedText style={[styles.reactionAddText, { color: colors.text + '70' }]}>+</ThemedText>
+                  </TouchableOpacity>
                 </View>
+                </>
               )}
 
-              {/* Panneau de réactions */}
+              {/* Panneau de réactions (picker) */}
               {onReaction && showReactions.has(membershipId) && (
                 <View style={[styles.reactionsPanel, { borderTopColor: colors.text + '10' }]}>
-                  <View style={styles.reactionsContainer}>
+                  <View style={styles.reactionsPickerContainer}>
                     {REACTIONS.map((reaction) => {
-                      const isActive = userStatusReaction === reaction.name;
+                      // Vérifier si l'utilisateur a déjà cette réaction spécifique
+                      const hasThisReaction = userStatusReaction === reaction.name;
                       return (
                         <TouchableOpacity
                           key={reaction.name}
                           style={[
-                            styles.reactionButton,
-                            isActive && { backgroundColor: colors.text + '10' },
+                            styles.reactionPickerButton,
+                            hasThisReaction && { backgroundColor: colors.text + '15' },
                           ]}
-                          onPress={() => onReaction(membershipId, reaction.name, 'status')}
+                          onPress={() => {
+                            onReaction?.(membershipId, reaction.name, 'status');
+                            setShowReactions(prev => {
+                              const next = new Set(prev);
+                              next.delete(membershipId);
+                              return next;
+                            });
+                          }}
                           activeOpacity={0.7}
                         >
                           <ThemedText style={styles.reactionEmojiButton}>{reaction.emoji}</ThemedText>
@@ -424,16 +452,30 @@ export function ActivityFeed({
                 </View>
               )}
 
-              {/* Section commentaires */}
+              {/* Séparateur entre réactions et commentaires */}
+              {onReaction && totalStatusReactions > 0 && (() => {
+                const comments = matchComments[membershipId] || [];
+                return comments.length > 0;
+              })() && (
+                <View style={[styles.reactionsCommentsSeparator, { borderTopColor: colors.text + '10' }]} />
+              )}
+
+              {/* Séparateur entre le post et les commentaires (si pas de réactions) */}
+              {(!onReaction || totalStatusReactions === 0) && onComment && (() => {
+                const comments = matchComments[membershipId] || [];
+                return comments.length > 0;
+              })() && (
+                <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
+              )}
+
+              {/* Commentaires - toujours visibles */}
               {(() => {
                 const comments = matchComments[membershipId] || [];
-                const visibleComments = comments;
-
                 return (
                   <>
                     {comments.length > 0 && (
                       <View style={styles.commentsSection}>
-                        {visibleComments.map((comment) => {
+                        {comments.map((comment) => {
                           const isOwnComment = currentPlayerId && (
                             comment.player_id === currentPlayerId || 
                             comment.player?.id === currentPlayerId
@@ -478,16 +520,29 @@ export function ActivityFeed({
                               {isOwnComment && onDeleteComment && (
                                 <TouchableOpacity
                                   style={styles.commentDeleteButton}
-                                  onPress={async () => {
-                                    try {
-                                      await onDeleteComment(comment.id, membershipId);
-                                      setMatchComments(prev => ({
-                                        ...prev,
-                                        [membershipId]: (prev[membershipId] || []).filter(c => c.id !== comment.id),
-                                      }));
-                                    } catch (error) {
-                                      console.error('Erreur suppression commentaire:', error);
-                                    }
+                                  onPress={() => {
+                                    Alert.alert(
+                                      'Supprimer le commentaire',
+                                      'Êtes-vous sûr de vouloir supprimer ce commentaire ?',
+                                      [
+                                        { text: 'Annuler', style: 'cancel' },
+                                        {
+                                          text: 'Supprimer',
+                                          style: 'destructive',
+                                          onPress: async () => {
+                                            try {
+                                              await onDeleteComment(comment.id, membershipId);
+                                              setMatchComments(prev => ({
+                                                ...prev,
+                                                [membershipId]: (prev[membershipId] || []).filter(c => c.id !== comment.id),
+                                              }));
+                                            } catch (error) {
+                                              console.error('Erreur suppression commentaire:', error);
+                                            }
+                                          },
+                                        },
+                                      ]
+                                    );
                                   }}
                                 >
                                   <IconSymbol name="trash" size={12} color={colors.text + '60'} />
@@ -500,43 +555,120 @@ export function ActivityFeed({
                     )}
 
                     {/* Input de commentaire */}
-                    {onComment && showCommentInput.has(membershipId) && (
-                      <View style={[styles.commentInputSection, { borderTopColor: colors.text + '10' }]}>
-                        <TextInput
-                          style={[
-                            styles.commentInput,
-                            {
-                              backgroundColor: colors.text + '05',
-                              color: colors.text,
-                              borderColor: colors.text + '15',
-                            },
-                          ]}
-                          placeholder="Ajouter un commentaire..."
-                          placeholderTextColor={colors.text + '50'}
-                          value={commentTexts[membershipId] || ''}
-                          onChangeText={(text) =>
-                            setCommentTexts(prev => ({ ...prev, [membershipId]: text }))
-                          }
-                          onSubmitEditing={() => handlePostComment(membershipId, 'membership')}
-                          multiline
-                          autoFocus
-                        />
-                        <TouchableOpacity
-                          style={[
-                            styles.commentSendButton,
-                            {
-                              backgroundColor: colors.text + '15',
-                              opacity: (commentTexts[membershipId]?.trim() && !postingComment.has(membershipId)) ? 1 : 0.5,
-                            },
-                          ]}
-                          onPress={() => handlePostComment(membershipId, 'membership')}
-                          disabled={!commentTexts[membershipId]?.trim() || postingComment.has(membershipId)}
-                          activeOpacity={0.7}
-                        >
-                          <IconSymbol name="paperplane.fill" size={16} color={colors.text} />
-                        </TouchableOpacity>
-                      </View>
+                    {/* Séparateur avant le champ de commentaire (si pas de réactions et pas de commentaires existants) */}
+                    {(!onReaction || totalStatusReactions === 0) && onComment && (() => {
+                      const comments = matchComments[membershipId] || [];
+                      return comments.length === 0;
+                    })() && (
+                      <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
                     )}
+
+                    {/* Champ de saisie de commentaire - toujours affiché */}
+                    {onComment && (() => {
+                      // Créer ou récupérer la ref pour cet input
+                      if (!inputRefs.current[membershipId]) {
+                        inputRefs.current[membershipId] = React.createRef<View>() as React.RefObject<View>;
+                      }
+                      const inputContainerRef = inputRefs.current[membershipId];
+                      const comments = matchComments[membershipId] || [];
+                      
+                      return (
+                        <View 
+                          ref={inputContainerRef}
+                          style={[styles.commentInputSection, { borderTopColor: comments.length > 0 ? colors.text + '10' : 'transparent' }]}
+                          onLayout={(event) => {
+                            // Stocker la position Y de l'input dans la fenêtre
+                            inputContainerRef.current?.measureInWindow((x, winY, width, height) => {
+                              inputYPositions.current[membershipId] = winY;
+                            });
+                          }}
+                        >
+                          <TextInput
+                            style={[
+                              styles.commentInput,
+                              {
+                                backgroundColor: colors.text + '05',
+                                color: colors.text,
+                                borderColor: colors.text + '15',
+                              },
+                            ]}
+                            placeholder="Ajouter un commentaire..."
+                            placeholderTextColor={colors.text + '50'}
+                            value={commentTexts[membershipId] || ''}
+                            onChangeText={(text) =>
+                              setCommentTexts(prev => ({ ...prev, [membershipId]: text }))
+                            }
+                            onFocus={() => {
+                              // Charger les commentaires si pas encore chargés
+                              if (onLoadComments && !matchComments[membershipId]) {
+                                onLoadComments(membershipId, 'membership')
+                                  .then((comments) => {
+                                    setMatchComments(prevComments => ({ ...prevComments, [membershipId]: comments }));
+                                  })
+                                  .catch((error) => {
+                                    console.error('Erreur chargement commentaires membership:', error);
+                                  });
+                              }
+                              // Scroller vers l'input après que le clavier s'ouvre
+                              if (onInputFocus) {
+                                // Attendre que le clavier soit complètement ouvert
+                                const keyboardListener = Keyboard.addListener('keyboardDidShow', () => {
+                                  setTimeout(() => {
+                                    onInputFocus(inputContainerRef);
+                                    keyboardListener.remove();
+                                  }, 100);
+                                });
+                              }
+                            }}
+                            onSubmitEditing={() => handlePostComment(membershipId, 'membership')}
+                            multiline
+                          />
+                          <View style={styles.commentInputActions}>
+                            {/* Bouton + pour ajouter une réaction (si pas de réactions) */}
+                            {onReaction && totalStatusReactions === 0 && (
+                              <TouchableOpacity
+                                style={[
+                                  styles.reactionAddButton,
+                                  { 
+                                    borderColor: colors.text + '20',
+                                    backgroundColor: colors.text + '08',
+                                    marginRight: 8,
+                                  }
+                                ]}
+                                onPress={() => {
+                                  setShowReactions(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(membershipId)) {
+                                      next.delete(membershipId);
+                                    } else {
+                                      next.add(membershipId);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                activeOpacity={0.7}
+                              >
+                                <ThemedText style={[styles.reactionAddText, { color: colors.text + '70' }]}>+</ThemedText>
+                              </TouchableOpacity>
+                            )}
+                            <TouchableOpacity
+                              style={[
+                                styles.commentSendButton,
+                                {
+                                  backgroundColor: colors.text + '15',
+                                  opacity: (commentTexts[membershipId]?.trim() && !postingComment.has(membershipId)) ? 1 : 0.5,
+                                },
+                              ]}
+                              onPress={() => handlePostComment(membershipId, 'membership')}
+                              disabled={!commentTexts[membershipId]?.trim() || postingComment.has(membershipId)}
+                              activeOpacity={0.7}
+                            >
+                              <IconSymbol name="paperplane.fill" size={16} color={colors.text} />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })()}
                   </>
                 );
               })()}
@@ -559,8 +691,6 @@ export function ActivityFeed({
         const opponent = isPlayedByPlayerA ? item.playerB : item.playerA;
 
         const comments = matchComments[matchId] || [];
-        // Afficher tous les commentaires par défaut
-        const visibleComments = comments;
 
         return (
           <View
@@ -591,19 +721,7 @@ export function ActivityFeed({
               </View>
             )}
 
-            {/* Gradient en haut */}
-            <LinearGradient
-              colors={
-                isWin
-                  ? ['rgba(16, 185, 129, 0.25)', 'rgba(16, 185, 129, 0.08)', 'transparent']
-                  : ['rgba(239, 68, 68, 0.25)', 'rgba(239, 68, 68, 0.08)', 'transparent']
-              }
-              style={styles.postGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0, y: 1 }}
-            />
-
-            {/* Header du post - Avatar + Nom + Date + Chip Victoire/Défaite */}
+            {/* Header du post - Avatar + Nom + Date */}
             <View style={styles.postHeader}>
               <TouchableOpacity
                 style={styles.postHeaderLeft}
@@ -626,38 +744,50 @@ export function ActivityFeed({
                   </ThemedText>
                 </View>
               </TouchableOpacity>
-              
-              {/* Chip Victoire/Défaite en haut à droite */}
-              {!item.isSpecialCase && (
-                <View
-                  style={[
-                    styles.matchResultChip,
-                    {
-                      backgroundColor: isWin ? '#10b981' + '15' : '#ef4444' + '15',
-                    },
-                  ]}
-                >
-                  <ThemedText style={[styles.matchResultChipText, { color: isWin ? '#10b981' : '#ef4444' }]}>
-                    {isWin ? 'Victoire' : 'Défaite'}
-                  </ThemedText>
-                </View>
-              )}
             </View>
 
             {/* Contenu du post - Match */}
             <View style={styles.postContent}>
-              <View style={styles.matchContent}>
-                {item.isSpecialCase && item.specialStatus ? (
-                  <View style={[styles.matchResultBadge, { backgroundColor: item.specialStatus.backgroundColor }]}>
-                    <ThemedText style={[styles.matchResultText, { color: item.specialStatus.textColor }]}>
-                      {item.specialStatus.label || 'Cas spécial'}
-                    </ThemedText>
+              {item.isSpecialCase && item.specialStatus ? (
+                <View style={[styles.matchSpecialCaseContainer, { backgroundColor: item.specialStatus.backgroundColor + '15' }]}>
+                  <View style={[styles.matchSpecialCaseIcon, { backgroundColor: item.specialStatus.backgroundColor + '30' }]}>
+                    <IconSymbol name="exclamationmark.triangle" size={20} color={item.specialStatus.textColor} />
                   </View>
-                ) : (
-                  <View style={styles.matchResultRow}>
-                      {/* Avatar adversaire */}
+                  <ThemedText style={[styles.matchSpecialCaseText, { color: item.specialStatus.textColor }]}>
+                    {item.specialStatus.label || 'Cas spécial'}
+                  </ThemedText>
+                </View>
+              ) : (
+                <View style={[styles.matchResultContainer, { backgroundColor: isWin ? '#10b981' + '08' : '#ef4444' + '08' }]}>
+                  {/* VS Layout */}
+                  <View style={styles.matchVsLayout}>
+                    {/* Joueur suivi */}
+                    <View style={styles.matchPlayerSection}>
+                      <PlayerAvatar
+                        firstName={followedPlayer.first_name || 'Joueur'}
+                        lastName={followedPlayer.last_name || ''}
+                        pictureUrl={followedPlayer.picture}
+                        size={48}
+                      />
+                      <ThemedText style={[styles.matchPlayerName, { color: colors.text }]} numberOfLines={1}>
+                        {followedPlayer.first_name} {followedPlayer.last_name}
+                      </ThemedText>
+                    </View>
+
+                    {/* Score central */}
+                    <View style={[styles.matchScoreContainer, { backgroundColor: isWin ? '#10b981' + '20' : '#ef4444' + '20' }]}>
+                      <ThemedText style={[styles.matchScoreLarge, { color: isWin ? '#10b981' : '#ef4444' }]}>
+                        {playedByScore || 0}
+                      </ThemedText>
+                      <ThemedText style={[styles.matchScoreSeparator, { color: colors.text + '40' }]}>-</ThemedText>
+                      <ThemedText style={[styles.matchScoreLarge, { color: isWin ? '#10b981' : '#ef4444' }]}>
+                        {opponentScore || 0}
+                      </ThemedText>
+                    </View>
+
+                    {/* Adversaire */}
+                    <View style={styles.matchPlayerSection}>
                       <TouchableOpacity
-                        style={styles.opponentAvatarContainer}
                         onPress={() => onPlayerPress?.(opponent.id)}
                         activeOpacity={0.7}
                         disabled={!onPlayerPress}
@@ -666,157 +796,146 @@ export function ActivityFeed({
                           firstName={opponent.first_name || 'Joueur'}
                           lastName={opponent.last_name || ''}
                           pictureUrl={opponent.picture}
-                          size={40}
+                          size={48}
                         />
                       </TouchableOpacity>
-
-                      {/* Nom adversaire */}
                       <TouchableOpacity
-                        style={styles.opponentNameContainer}
                         onPress={() => onPlayerPress?.(opponent.id)}
                         activeOpacity={0.7}
                         disabled={!onPlayerPress}
                       >
-                        <ThemedText style={[styles.opponentName, { color: colors.text, fontWeight: '600' }]} numberOfLines={1}>
+                        <ThemedText style={[styles.matchPlayerName, { color: colors.text }]} numberOfLines={1}>
                           {opponent.first_name} {opponent.last_name}
                         </ThemedText>
                       </TouchableOpacity>
-
-                      {/* Score */}
-                      <View
-                        style={[
-                          styles.matchScoreBadge,
-                          { 
-                            backgroundColor: isWin ? '#d4edda' : '#f8d7da',
-                          },
-                        ]}
-                      >
-                        <ThemedText
-                          style={[
-                            styles.matchScoreText,
-                            { 
-                              color: isWin ? '#155724' : '#721c24',
-                            },
-                          ]}
-                        >
-                          {formatMatchScore(
-                            item.match,
-                            item.playedBy.id,
-                            playedByScore || 0,
-                            opponentScore || 0
-                          )}
-                        </ThemedText>
-                      </View>
                     </View>
-                )}
-              </View>
-            </View>
-
-            {/* Séparateur */}
-            {(onReaction || onComment) && (
-              <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
-            )}
-
-            {/* Actions (Réactions et Commentaires) */}
-            <View style={styles.postActions}>
-              <View style={styles.postActionsLeft}>
-                {/* Bouton réactions */}
-                {onReaction && (
-                  <TouchableOpacity
-                    style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
-                    onPress={() => {
-                      setShowReactions(prev => {
-                        const next = new Set(prev);
-                        if (next.has(matchId)) {
-                          next.delete(matchId);
-                        } else {
-                          next.add(matchId);
-                        }
-                        return next;
-                      });
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <IconSymbol 
-                      name={userReaction ? "face.smiling.fill" : "face.smiling"} 
-                      size={18} 
-                      color={userReaction ? PRIMARY_COLOR : colors.text + '80'} 
-                    />
-                  </TouchableOpacity>
-                )}
-
-                {/* Bouton commentaires */}
-                {onComment && (
-                  <TouchableOpacity
-                    style={[styles.toggleButton, { borderColor: colors.text + '20' }]}
-                    onPress={() => {
-                      setShowCommentInput(prev => {
-                        const next = new Set(prev);
-                        const isOpening = !next.has(matchId);
-                        if (isOpening) {
-                          next.add(matchId);
-                          if (onLoadComments && !matchComments[matchId]) {
-                            onLoadComments(matchId, 'match')
-                              .then((comments) => {
-                                setMatchComments(prevComments => ({ ...prevComments, [matchId]: comments }));
-                              })
-                              .catch((error) => {
-                                console.error('Erreur chargement commentaires:', error);
-                              });
-                          }
-                        } else {
-                          next.delete(matchId);
-                        }
-                        return next;
-                      });
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <IconSymbol name="bubble.left" size={16} color={colors.text + '80'} />
-                    {comments.length > 0 && (
-                      <ThemedText style={[styles.toggleButtonText, { color: colors.text + '80' }]}>
-                        {comments.length}
-                      </ThemedText>
-                    )}
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Résumé des réactions */}
-              {onReaction && totalReactions > 0 && (
-                <View style={styles.reactionsSummary}>
-                  {REACTIONS.map((reaction) => {
-                    const count = matchReactions[reaction.name] || 0;
-                    if (count === 0) return null;
-                    return (
-                      <View key={reaction.name} style={[styles.reactionBadge, { borderColor: colors.text + '20' }]}>
-                        <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
-                        {count > 1 && (
-                          <ThemedText style={[styles.reactionCount, { color: colors.text + '70' }]}>
-                            {count}
-                          </ThemedText>
-                        )}
-                      </View>
-                    );
-                  })}
+                  </View>
                 </View>
               )}
             </View>
 
-            {/* Panneau de réactions */}
+            {/* Réactions style Discord - toujours visibles */}
+            {onReaction && totalReactions > 0 && (
+              <>
+                {/* Séparateur entre le post et les réactions */}
+                <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
+              <View style={[styles.reactionsContainer, { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 }]}>
+                {/* Afficher toutes les réactions existantes */}
+                {REACTIONS.map((reaction) => {
+                  const count = matchReactions[reaction.name] || 0;
+                  if (count === 0) return null;
+                  // Vérifier si l'utilisateur a cette réaction spécifique
+                  // Utiliser userReaction directement (une seule réaction pour l'instant) ou userReactionsByType si disponible
+                  const userReactionsForItem = userReactionsByType[matchId] || new Set<string>();
+                  const hasThisReaction = userReaction === reaction.name || userReactionsForItem.has(reaction.name);
+                  return (
+                    <TouchableOpacity
+                      key={reaction.name}
+                      style={[
+                        styles.reactionBadge,
+                        { 
+                          borderColor: hasThisReaction ? PRIMARY_COLOR + '80' : colors.text + '20',
+                          borderWidth: hasThisReaction ? 1.5 : 1,
+                          backgroundColor: hasThisReaction ? PRIMARY_COLOR + '20' : colors.text + '08',
+                        }
+                      ]}
+                      onPress={async () => {
+                        // Toggle: si on a déjà cette réaction, la retirer, sinon l'ajouter
+                        onReaction(matchId, reaction.name, 'match');
+                      }}
+                      onLongPress={async () => {
+                        // Long press pour voir qui a réagi
+                        try {
+                          setLoadingReactionPlayers(true);
+                          setReactionPlayersModal({
+                            visible: true,
+                            entityType: 'match',
+                            entityId: matchId,
+                          });
+                          const playersByType = await api.getReactionPlayers('match', matchId);
+                          setReactionPlayersByType(playersByType);
+                          
+                          // Mettre à jour userReactionsByType pour savoir quelles réactions l'utilisateur a
+                          if (currentPlayerId) {
+                            const userReactionsSet = new Set<string>();
+                            Object.entries(playersByType).forEach(([reactionType, players]) => {
+                              if (players.some(p => p.id === currentPlayerId)) {
+                                userReactionsSet.add(reactionType);
+                              }
+                            });
+                            setUserReactionsByType(prev => ({
+                              ...prev,
+                              [matchId]: userReactionsSet,
+                            }));
+                          }
+                        } catch (error) {
+                          console.error('Erreur chargement joueurs réaction:', error);
+                          Alert.alert('Erreur', 'Impossible de charger la liste des joueurs');
+                          setReactionPlayersModal(null);
+                        } finally {
+                          setLoadingReactionPlayers(false);
+                        }
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <ThemedText style={styles.reactionEmoji}>{reaction.emoji}</ThemedText>
+                      <ThemedText style={[styles.reactionCount, { color: colors.text + (hasThisReaction ? '90' : '70') }]}>
+                        {count}
+                      </ThemedText>
+                    </TouchableOpacity>
+                  );
+                })}
+                
+                {/* Bouton + pour ajouter une réaction */}
+                <TouchableOpacity
+                  style={[
+                    styles.reactionAddButton,
+                    { 
+                      borderColor: colors.text + '20',
+                      backgroundColor: colors.text + '08',
+                    }
+                  ]}
+                  onPress={() => {
+                    setShowReactions(prev => {
+                      const next = new Set(prev);
+                      if (next.has(matchId)) {
+                        next.delete(matchId);
+                      } else {
+                        next.add(matchId);
+                      }
+                      return next;
+                    });
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <ThemedText style={[styles.reactionAddText, { color: colors.text + '70' }]}>+</ThemedText>
+                </TouchableOpacity>
+              </View>
+              </>
+            )}
+
+            {/* Panneau de réactions (picker) */}
             {onReaction && showReactions.has(matchId) && (
               <View style={[styles.reactionsPanel, { borderTopColor: colors.text + '10' }]}>
-                <View style={styles.reactionsContainer}>
+                <View style={styles.reactionsPickerContainer}>
                   {REACTIONS.map((reaction) => {
-                    const isActive = userReaction === reaction.name;
+                    // Vérifier si l'utilisateur a déjà cette réaction spécifique
+                    const hasThisReaction = userReaction === reaction.name;
                     return (
                       <TouchableOpacity
                         key={reaction.name}
                         style={[
-                          styles.reactionButton,
-                          isActive && { backgroundColor: colors.text + '10' },
+                          styles.reactionPickerButton,
+                          hasThisReaction && { backgroundColor: colors.text + '15' },
                         ]}
-                        onPress={() => onReaction(matchId, reaction.name, 'match')}
+                        onPress={() => {
+                          onReaction(matchId, reaction.name, 'match');
+                          setShowReactions(prev => {
+                            const next = new Set(prev);
+                            next.delete(matchId);
+                            return next;
+                          });
+                        }}
                         activeOpacity={0.7}
                       >
                         <ThemedText style={styles.reactionEmojiButton}>{reaction.emoji}</ThemedText>
@@ -827,10 +946,20 @@ export function ActivityFeed({
               </View>
             )}
 
-            {/* Commentaires visibles - affichés par défaut */}
+            {/* Séparateur entre réactions et commentaires */}
+            {onReaction && totalReactions > 0 && comments.length > 0 && (
+              <View style={[styles.reactionsCommentsSeparator, { borderTopColor: colors.text + '10' }]} />
+            )}
+
+            {/* Séparateur entre le post et les commentaires (si pas de réactions) */}
+            {(!onReaction || totalReactions === 0) && onComment && comments.length > 0 && (
+              <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
+            )}
+
+            {/* Commentaires - toujours visibles */}
             {comments.length > 0 && (
               <View style={styles.commentsSection}>
-                {visibleComments.map((comment) => {
+                {comments.map((comment) => {
                   const isOwnComment = currentPlayerId && (
                     comment.player_id === currentPlayerId || 
                     comment.player?.id === currentPlayerId
@@ -873,16 +1002,29 @@ export function ActivityFeed({
                       {isOwnComment && onDeleteComment && (
                         <TouchableOpacity
                           style={styles.commentDeleteButton}
-                          onPress={async () => {
-                            try {
-                              await onDeleteComment(comment.id, matchId);
-                              setMatchComments(prev => ({
-                                ...prev,
-                                [matchId]: (prev[matchId] || []).filter(c => c.id !== comment.id),
-                              }));
-                            } catch (error) {
-                              console.error('Erreur suppression commentaire:', error);
-                            }
+                          onPress={() => {
+                            Alert.alert(
+                              'Supprimer le commentaire',
+                              'Êtes-vous sûr de vouloir supprimer ce commentaire ?',
+                              [
+                                { text: 'Annuler', style: 'cancel' },
+                                {
+                                  text: 'Supprimer',
+                                  style: 'destructive',
+                                  onPress: async () => {
+                                    try {
+                                      await onDeleteComment(comment.id, matchId);
+                                      setMatchComments(prev => ({
+                                        ...prev,
+                                        [matchId]: (prev[matchId] || []).filter(c => c.id !== comment.id),
+                                      }));
+                                    } catch (error) {
+                                      console.error('Erreur suppression commentaire:', error);
+                                    }
+                                  },
+                                },
+                              ]
+                            );
                           }}
                           activeOpacity={0.7}
                         >
@@ -896,47 +1038,222 @@ export function ActivityFeed({
               </View>
             )}
 
-            {/* Champ de saisie de commentaire - affiché seulement si toggle activé */}
-            {onComment && showCommentInput.has(matchId) && (
-              <View style={[styles.commentInputSection, { borderTopColor: colors.text + '10' }]}>
-                <TextInput
-                  style={[
-                    styles.commentInput,
-                    {
-                      backgroundColor: colors.text + '05',
-                      color: colors.text,
-                      borderColor: colors.text + '15',
-                    },
-                  ]}
-                  placeholder="Ajouter un commentaire..."
-                  placeholderTextColor={colors.text + '50'}
-                  value={commentTexts[matchId] || ''}
-                  onChangeText={(text) =>
-                    setCommentTexts(prev => ({ ...prev, [matchId]: text }))
-                  }
-                  onSubmitEditing={() => handlePostComment(matchId, 'match')}
-                  multiline
-                  autoFocus
-                />
-                <TouchableOpacity
-                  style={[
-                    styles.commentSendButton,
-                    {
-                      backgroundColor: colors.text + '15',
-                      opacity: (commentTexts[matchId]?.trim() && !postingComment.has(matchId)) ? 1 : 0.5,
-                    },
-                  ]}
-                  onPress={() => handlePostComment(matchId, 'match')}
-                  disabled={!commentTexts[matchId]?.trim() || postingComment.has(matchId)}
-                  activeOpacity={0.7}
-                >
-                  <IconSymbol name="paperplane.fill" size={16} color={colors.text} />
-                </TouchableOpacity>
-              </View>
+            {/* Séparateur avant le champ de commentaire (si pas de réactions et pas de commentaires existants) */}
+            {(!onReaction || totalReactions === 0) && onComment && comments.length === 0 && (
+              <View style={[styles.postSeparator, { borderTopColor: colors.text + '15' }]} />
             )}
+
+            {/* Champ de saisie de commentaire - toujours affiché */}
+            {onComment && (() => {
+              // Créer ou récupérer la ref pour cet input
+              if (!inputRefs.current[matchId]) {
+                inputRefs.current[matchId] = React.createRef<View>() as React.RefObject<View>;
+              }
+              const inputContainerRef = inputRefs.current[matchId];
+              
+              return (
+                <View 
+                  ref={inputContainerRef}
+                  style={[styles.commentInputSection, { borderTopColor: comments.length > 0 ? colors.text + '10' : 'transparent' }]}
+                  onLayout={(event) => {
+                    // Stocker la position Y de l'input dans le ScrollView parent
+                    const { y } = event.nativeEvent.layout;
+                    // On doit obtenir la position relative au ScrollView, pas juste le layout local
+                    inputContainerRef.current?.measureInWindow((x, winY, width, height) => {
+                      // On stocke la position Y dans la fenêtre pour référence
+                      inputYPositions.current[matchId] = winY;
+                    });
+                  }}
+                >
+                  <TextInput
+                    style={[
+                      styles.commentInput,
+                      {
+                        backgroundColor: colors.text + '05',
+                        color: colors.text,
+                        borderColor: colors.text + '15',
+                      },
+                    ]}
+                    placeholder="Ajouter un commentaire..."
+                    placeholderTextColor={colors.text + '50'}
+                    value={commentTexts[matchId] || ''}
+                    onChangeText={(text) =>
+                      setCommentTexts(prev => ({ ...prev, [matchId]: text }))
+                    }
+                    onFocus={() => {
+                      // Charger les commentaires si pas encore chargés
+                      if (onLoadComments && !matchComments[matchId]) {
+                        onLoadComments(matchId, 'match')
+                          .then((comments) => {
+                            setMatchComments(prevComments => ({ ...prevComments, [matchId]: comments }));
+                          })
+                          .catch((error) => {
+                            console.error('Erreur chargement commentaires:', error);
+                          });
+                      }
+                      // Scroller vers l'input après que le clavier s'ouvre
+                      if (onInputFocus) {
+                        // Attendre que le clavier soit complètement ouvert
+                        const keyboardListener = Keyboard.addListener('keyboardDidShow', () => {
+                          setTimeout(() => {
+                            onInputFocus(inputContainerRef);
+                            keyboardListener.remove();
+                          }, 100);
+                        });
+                      }
+                    }}
+                    onSubmitEditing={() => handlePostComment(matchId, 'match')}
+                    multiline
+                  />
+                <View style={styles.commentInputActions}>
+                  {/* Bouton + pour ajouter une réaction (si pas de réactions) */}
+                  {onReaction && totalReactions === 0 && (
+                    <TouchableOpacity
+                      style={[
+                        styles.reactionAddButton,
+                        { 
+                          borderColor: colors.text + '20',
+                          backgroundColor: colors.text + '08',
+                          marginRight: 8,
+                        }
+                      ]}
+                      onPress={() => {
+                        setShowReactions(prev => {
+                          const next = new Set(prev);
+                          if (next.has(matchId)) {
+                            next.delete(matchId);
+                          } else {
+                            next.add(matchId);
+                          }
+                          return next;
+                        });
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <ThemedText style={[styles.reactionAddText, { color: colors.text + '70' }]}>+</ThemedText>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[
+                      styles.commentSendButton,
+                      {
+                        backgroundColor: colors.text + '15',
+                        opacity: (commentTexts[matchId]?.trim() && !postingComment.has(matchId)) ? 1 : 0.5,
+                      },
+                    ]}
+                    onPress={() => handlePostComment(matchId, 'match')}
+                    disabled={!commentTexts[matchId]?.trim() || postingComment.has(matchId)}
+                    activeOpacity={0.7}
+                  >
+                    <IconSymbol name="paperplane.fill" size={16} color={colors.text} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+              );
+            })()}
           </View>
         );
       })}
+
+      {/* Modal pour afficher les joueurs qui ont réagi */}
+      <Modal
+        visible={reactionPlayersModal?.visible || false}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setReactionPlayersModal(null);
+          setReactionPlayersByType({});
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            setReactionPlayersModal(null);
+            setReactionPlayersByType({});
+          }}
+        >
+          <View
+            style={[styles.reactionPlayersModal, { backgroundColor: colors.background }]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.reactionPlayersModalHeader}>
+              <ThemedText style={[styles.reactionPlayersModalTitle, { color: colors.text }]}>
+                Réactions
+              </ThemedText>
+              <TouchableOpacity
+                onPress={() => {
+                  setReactionPlayersModal(null);
+                  setReactionPlayersByType({});
+                }}
+                style={styles.reactionPlayersModalCloseButton}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="xmark" size={20} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {loadingReactionPlayers ? (
+              <View style={styles.reactionPlayersModalLoading}>
+                <ActivityIndicator size="large" color={colors.text + '80'} />
+              </View>
+            ) : (
+              <ScrollView style={styles.reactionPlayersModalList}>
+                {(() => {
+                  // Aplatir les données : créer une liste de { player, reactionType }
+                  const playersWithReactions: Array<{ player: PlayerDTO; reactionType: string }> = [];
+                  Object.entries(reactionPlayersByType).forEach(([reactionType, players]) => {
+                    players.forEach(player => {
+                      playersWithReactions.push({ player, reactionType });
+                    });
+                  });
+
+                  // Trier par nom (prénom + nom) en ordre ascendant
+                  playersWithReactions.sort((a, b) => {
+                    const nameA = `${a.player.first_name} ${a.player.last_name}`.toLowerCase();
+                    const nameB = `${b.player.first_name} ${b.player.last_name}`.toLowerCase();
+                    return nameA.localeCompare(nameB);
+                  });
+
+                  return playersWithReactions.map(({ player, reactionType }) => {
+                    const reaction = REACTIONS.find(r => r.name === reactionType);
+                    return (
+                      <TouchableOpacity
+                        key={`${player.id}-${reactionType}`}
+                        style={[styles.reactionPlayerItem, { borderBottomColor: colors.text + '10' }]}
+                        onPress={() => {
+                          onPlayerPress?.(player.id);
+                          setReactionPlayersModal(null);
+                          setReactionPlayersByType({});
+                        }}
+                        activeOpacity={0.7}
+                        disabled={!onPlayerPress}
+                      >
+                        <PlayerAvatar
+                          firstName={player.first_name}
+                          lastName={player.last_name}
+                          pictureUrl={player.picture}
+                          size={40}
+                        />
+                        <View style={styles.reactionPlayerInfo}>
+                          <ThemedText style={[styles.reactionPlayerName, { color: colors.text }]}>
+                            {player.first_name} {player.last_name}
+                          </ThemedText>
+                        </View>
+                        {reaction && (
+                          <ThemedText style={styles.reactionPlayerEmoji}>
+                            {reaction.emoji}
+                          </ThemedText>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  });
+                })()}
+              </ScrollView>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
@@ -1011,74 +1328,104 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  matchResultChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
+  matchResultContainer: {
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
   },
-  matchResultChipText: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  matchResultRow: {
+  matchVsLayout: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    width: '100%',
+    justifyContent: 'space-between',
+    gap: 12,
   },
-  opponentAvatarContainer: {
-    marginRight: 0,
-  },
-  opponentNameContainer: {
+  matchPlayerSection: {
     flex: 1,
-    minWidth: 0,
+    alignItems: 'center',
+    gap: 8,
   },
-  opponentName: {
+  matchPlayerName: {
     fontSize: 13,
     fontWeight: '600',
+    textAlign: 'center',
   },
-  matchResultBadge: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  matchResultText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  matchScoreBadge: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 10,
-    minWidth: 70,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  matchScoreText: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  // Post de changement de statut
-  statusBadge: {
+  matchScoreContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    minWidth: 100,
+    justifyContent: 'center',
   },
-  statusText: {
-    fontSize: 11,
+  matchScoreLarge: {
+    fontSize: 24,
     fontWeight: '700',
-    letterSpacing: 0.3,
+  },
+  matchScoreSeparator: {
+    fontSize: 20,
+    fontWeight: '500',
+  },
+  matchResultBadgeNew: {
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  matchResultBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  matchSpecialCaseContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 16,
+    borderRadius: 12,
+  },
+  matchSpecialCaseIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  matchSpecialCaseText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  // Post de changement de statut
+  statusContentContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 16,
+    borderRadius: 12,
+  },
+  statusIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statusTextContainer: {
+    flex: 1,
+    gap: 4,
+  },
+  statusTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  statusSubtitle: {
+    fontSize: 10,
   },
   // Séparateur
   postSeparator: {
     borderTopWidth: 1,
-    marginHorizontal: 16,
     marginTop: 12,
     marginBottom: 4,
   },
@@ -1141,8 +1488,25 @@ const styles = StyleSheet.create({
   },
   reactionsContainer: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  reactionAddButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
     justifyContent: 'center',
+  },
+  reactionAddText: {
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  reactionsPickerContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
   },
   reactionButton: {
     width: 44,
@@ -1151,8 +1515,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  reactionPickerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: 'transparent',
+  },
   reactionEmojiButton: {
     fontSize: 24,
+  },
+  reactionsCommentsSeparator: {
+    borderTopWidth: 1,
+    marginTop: 4,
+    marginBottom: 4,
+    marginHorizontal: 16,
   },
   // Commentaires
   commentsSection: {
@@ -1218,6 +1597,11 @@ const styles = StyleSheet.create({
     minHeight: 36,
     maxHeight: 100,
   },
+  commentInputActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 0,
+  },
   commentSendButton: {
     width: 36,
     height: 36,
@@ -1234,5 +1618,86 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     fontWeight: '400',
+  },
+  // Modal réactions
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reactionPlayersModal: {
+    width: '85%',
+    maxHeight: '70%',
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  reactionPlayersModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+  },
+  reactionPlayersModalTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  reactionPlayersModalEmoji: {
+    fontSize: 24,
+  },
+  reactionPlayersModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  reactionPlayersModalCloseButton: {
+    padding: 4,
+  },
+  reactionPlayersModalLoading: {
+    padding: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reactionPlayersModalList: {
+    maxHeight: 400,
+  },
+  reactionPlayerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  reactionPlayerInfo: {
+    flex: 1,
+  },
+  reactionPlayerName: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  reactionPlayerEmoji: {
+    fontSize: 20,
+  },
+  reactionGroup: {
+    marginBottom: 16,
+  },
+  reactionGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  reactionGroupEmoji: {
+    fontSize: 20,
+  },
+  reactionGroupTitle: {
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

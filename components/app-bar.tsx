@@ -53,25 +53,37 @@ export function AppBar({ title, menuItems, leftIcon, rightAction }: AppBarProps)
   const [showMenu, setShowMenu] = useState(false);
 
   // Charger le joueur actuel
-  React.useEffect(() => {
-    const loadCurrentPlayer = async () => {
-      if (!isAuthenticated || !user) {
-        setCurrentPlayer(null);
-        return;
-      }
-      
-      try {
-        const players = await api.getPlayersCached();
-        const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
-        setCurrentPlayer(player || null);
-      } catch (error) {
-        console.error('Erreur chargement joueur:', error);
-        setCurrentPlayer(null);
-      }
-    };
+  const loadCurrentPlayer = React.useCallback(async () => {
+    if (!isAuthenticated || !user) {
+      setCurrentPlayer(null);
+      return;
+    }
     
+    try {
+      // Forcer le refresh pour avoir les données à jour
+      const players = await api.getPlayersCached(true);
+      const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
+      setCurrentPlayer(player || null);
+    } catch (error) {
+      console.error('Erreur chargement joueur:', error);
+      setCurrentPlayer(null);
+    }
+  }, [isAuthenticated, user]);
+
+  React.useEffect(() => {
     loadCurrentPlayer();
-  }, [user, isAuthenticated]);
+  }, [loadCurrentPlayer]);
+
+  // Recharger quand le modal de profil se ferme (pour mettre à jour la membership)
+  React.useEffect(() => {
+    if (!showProfileModal && isAuthenticated && user) {
+      // Petit délai pour laisser le temps au cache d'être invalidé
+      const timer = setTimeout(() => {
+        loadCurrentPlayer();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [showProfileModal, isAuthenticated, user, loadCurrentPlayer]);
 
   // Déterminer le titre selon la route
   const pageTitle = useMemo(() => {

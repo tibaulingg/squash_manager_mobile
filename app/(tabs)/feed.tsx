@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Intervalle de rafraîchissement des matchs en live (en secondes)
@@ -40,6 +40,7 @@ export default function FeedScreen() {
   const [liveMatches, setLiveMatches] = useState<MatchDTO[]>([]);
   const [allBoxes, setAllBoxes] = useState<BoxDTO[]>([]);
   const [allPlayers, setAllPlayers] = useState<PlayerDTO[]>([]);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   // Charger le joueur actuel
   useEffect(() => {
@@ -50,7 +51,9 @@ export default function FeedScreen() {
       }
       
       try {
-        const players = await api.getPlayersCached();
+        // Utiliser le cache sans forcer le refresh (forceRefresh = false par défaut)
+        // Si le cache existe déjà, on l'utilise, sinon on charge
+        const players = await api.getPlayersCached(false);
         const player = players.find((p) => p.email?.toLowerCase() === user.email.toLowerCase());
         setCurrentPlayer(player || null);
       } catch (error) {
@@ -165,7 +168,8 @@ export default function FeedScreen() {
         });
       }
       
-      const players = await api.getPlayersCached();
+      // Utiliser le cache au lieu de forcer un refresh
+      const players = await api.getPlayersCached(false);
       setAllPlayers(players);
       
       // NOTE: on ne charge plus les réactions "match only" ici.
@@ -316,7 +320,8 @@ export default function FeedScreen() {
       const [matches, seasons, players] = await Promise.all([
         api.getLiveMatches(),
         api.getSeasonsCached(isRefresh),
-        api.getPlayersCached(isRefresh),
+        // Utiliser le cache pour les joueurs même lors du refresh (les joueurs changent rarement)
+        api.getPlayersCached(false),
       ]);
 
       setAllPlayers(players);
@@ -456,19 +461,32 @@ export default function FeedScreen() {
   const handleDeleteComment = async (commentId: string, matchId: string) => {
     if (!currentPlayer) return;
     
-    try {
-      // Utiliser l'API unifiée pour les commentaires
-      await api.deleteComment(commentId, currentPlayer.id);
-      
-      // Mettre à jour les commentaires locaux
-      setMatchComments(prev => ({
-        ...prev,
-        [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
-      }));
-    } catch (error: any) {
-      console.error('Erreur suppression commentaire:', error);
-      Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
-    }
+    Alert.alert(
+      'Supprimer le commentaire',
+      'Êtes-vous sûr de vouloir supprimer ce commentaire ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Utiliser l'API unifiée pour les commentaires
+              await api.deleteComment(commentId, currentPlayer.id);
+              
+              // Mettre à jour les commentaires locaux
+              setMatchComments(prev => ({
+                ...prev,
+                [matchId]: (prev[matchId] || []).filter(c => c.id !== commentId),
+              }));
+            } catch (error: any) {
+              console.error('Erreur suppression commentaire:', error);
+              Alert.alert('Erreur', error.message || 'Impossible de supprimer le commentaire');
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (loading) {
@@ -511,22 +529,29 @@ export default function FeedScreen() {
   return (
     <ThemedView style={styles.container}>
       <AppBar />
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingTop: 20 },
-        ]}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor={colors.text + '80'}
-            colors={[colors.text + '80']}
-          />
-        }
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
       >
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.scrollView}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingTop: 20 },
+          ]}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={colors.text + '80'}
+              colors={[colors.text + '80']}
+            />
+          }
+        >
 
         {/* Matchs en live des joueurs suivis */}
         {liveMatches.length > 0 && (
@@ -581,6 +606,28 @@ export default function FeedScreen() {
               onComment={handleComment}
               onLoadComments={handleLoadComments}
               onDeleteComment={handleDeleteComment}
+              onInputFocus={(inputRef) => {
+                if (inputRef.current && scrollViewRef.current) {
+                    inputRef.current.measureLayout(
+                      scrollViewRef.current as any,
+                      (x, y, width, height) => {
+
+                        const targetY = y - 350;
+                        
+                        console.log('scrolling to y : ', targetY);
+
+                        scrollViewRef.current?.scrollTo({
+                          y: targetY,
+                          animated: true,
+                        });
+                      },
+                      () => {
+                        // Si measureLayout échoue, utiliser scrollToEnd comme fallback
+                        scrollViewRef.current?.scrollToEnd({ animated: true });
+                      }
+                    );
+                }
+              }}
             />
           </View>
         ) : (
@@ -598,7 +645,8 @@ export default function FeedScreen() {
         )}
 
         <View style={{ height: 40 }} />
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
       
       {/* Modal de profil joueur */}
       {showPlayerModal && selectedPlayerId && (

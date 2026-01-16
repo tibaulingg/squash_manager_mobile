@@ -484,10 +484,10 @@ export default function BoxScreen() {
               ]}
             >
               <View style={styles.boxTitleLeft}>
-                <View style={[styles.boxIconContainer, { backgroundColor: PRIMARY_COLOR + '15' }]}>
-                  <IconSymbol name="square.grid.2x2.fill" size={18} color={PRIMARY_COLOR} />
+                <View style={[styles.boxIconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
+                  <IconSymbol name="square.grid.2x2.fill" size={20} color={PRIMARY_COLOR} />
                 </View>
-                <ThemedText type="subtitle" style={styles.boxTitle}>
+                <ThemedText type="subtitle" style={[styles.boxTitle, { color: colors.text }]}>
                   {box.name}
                 </ThemedText>
               </View>
@@ -643,7 +643,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   boxTitleContainer: {
-    paddingVertical: 10,
+    paddingVertical: 14,
     paddingHorizontal: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -656,19 +656,20 @@ const styles = StyleSheet.create({
   boxTitleLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     flex: 1,
   },
   boxIconContainer: {
-    width: 28,
-    height: 28,
-    borderRadius: 7,
+    width: 32,
+    height: 32,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   boxTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '700',
+    letterSpacing: 0.2,
     flex: 1,
   },
   starButton: {
