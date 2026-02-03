@@ -18,6 +18,7 @@ const MAPPING = {
   'paperplane.fill': 'send',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'chevron.left': 'chevron-left',
   'face.smiling': 'add-reaction',
   'person': 'person-outline',
   'person.fill': 'person',
@@ -26,6 +27,17 @@ const MAPPING = {
   'person.2.fill': 'group',
   'checkmark': 'check',
   'xmark': 'close',
+  'arrow.uturn.backward': 'undo',
+  'whistle.fill': 'sports',
+  'livephoto': 'fiber-manual-record',
+  'square.grid.2x2.fill': 'grid-view',
+  'sportscourt.fill': 'sports-basketball',
+  'gearshape.fill': 'settings',
+  'clock.fill': 'schedule',
+  'lock.fill': 'lock',
+  'checkmark.circle.fill': 'check-circle',
+  'trophy.fill': 'emoji-events',
+  'tray.fill': 'inbox',
 } as IconMapping;
 
 /**

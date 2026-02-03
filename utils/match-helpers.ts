@@ -15,23 +15,25 @@ export function getMatchSpecialStatus(
   playerId: string,
   isWin: boolean
 ): MatchSpecialStatus {
-  // Cas spécial : No show (absence) - GRIS
+  // Cas spécial : No show (absence)
   if (match.no_show_player_id) {
+    const isPlayerAbsent = match.no_show_player_id === playerId;
     return {
       type: 'no_show',
-      label: match.no_show_player_id === playerId ? 'Absent' : 'Adv. Absent',
-      backgroundColor: '#f3f4f6', // Gris clair
-      textColor: '#6b7280', // Gris foncé
+      label: isPlayerAbsent ? 'Absent' : 'Adv. Absent',
+      backgroundColor: isPlayerAbsent ? '#f8d7da' : '#f3f4f6', // Rouge si c'est le joueur, gris si c'est l'adversaire
+      textColor: isPlayerAbsent ? '#721c24' : '#6b7280', // Rouge si c'est le joueur, gris si c'est l'adversaire
     };
   }
 
-  // Cas spécial : Blessure (retired) - GRIS
+  // Cas spécial : Blessure (retired)
   if (match.retired_player_id) {
+    const isPlayerInjured = match.retired_player_id === playerId;
     return {
       type: 'retired',
-      label: match.retired_player_id === playerId ? 'Blessé' : 'Bless. adv.',
-      backgroundColor: '#f3f4f6', // Gris clair
-      textColor: '#6b7280', // Gris foncé
+      label: isPlayerInjured ? 'Blessé' : 'Bless. adv.',
+      backgroundColor: isPlayerInjured ? '#f8d7da' : '#f3f4f6', // Rouge si c'est le joueur, gris si c'est l'adversaire
+      textColor: isPlayerInjured ? '#721c24' : '#6b7280', // Rouge si c'est le joueur, gris si c'est l'adversaire
     };
   }
 
@@ -92,7 +94,7 @@ export function getShortMatchLabel(match: MatchDTO, playerId: string): string | 
     if (match.no_show_player_id === playerId) {
       return 'PVSP';
     } else {
-      return 'Forf.A';
+      return 'Adv.\nPVSP';
     }
   }
 
@@ -101,7 +103,7 @@ export function getShortMatchLabel(match: MatchDTO, playerId: string): string | 
     if (match.retired_player_id === playerId) {
       return 'Bl.';
     } else {
-      return 'Bl.A';
+      return 'Bl.\nAdv.';
     }
   }
 

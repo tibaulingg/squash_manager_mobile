@@ -4,7 +4,7 @@ import { StyleSheet, TouchableOpacity, View } from 'react-native';
 import { PlayerAvatar } from '@/components/player-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
+import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
 
@@ -14,9 +14,10 @@ interface LiveMatchCardProps {
   playerB: PlayerDTO;
   box?: BoxDTO;
   onPlayerPress?: (playerId: string) => void;
+  onRefereePress?: (matchId: string) => void;
 }
 
-export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress }: LiveMatchCardProps) {
+export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onRefereePress }: LiveMatchCardProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const [timeElapsed, setTimeElapsed] = useState<string>('');
@@ -47,6 +48,25 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress }: L
 
   const scoreA = match.score_a ?? 0;
   const scoreB = match.score_b ?? 0;
+
+  // Parser le live_score pour afficher les scores détaillés de chaque jeu
+  const parseGameScores = (liveScore: string | null): Array<{ scoreA: number; scoreB: number }> => {
+    if (!liveScore || liveScore.trim() === '') return [];
+    
+    const parts = liveScore.split(';');
+    const gameScores: Array<{ scoreA: number; scoreB: number }> = [];
+    
+    parts.forEach((part) => {
+      const [scoreAStr, scoreBStr] = part.split('-');
+      const scoreA = parseInt(scoreAStr, 10) || 0;
+      const scoreB = parseInt(scoreBStr, 10) || 0;
+      gameScores.push({ scoreA, scoreB });
+    });
+    
+    return gameScores;
+  };
+
+  const gameScores = parseGameScores(match.live_score);
 
   return (
     <View style={[styles.card, { 
@@ -95,6 +115,22 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress }: L
               </ThemedText>
             </View>
           )}
+          
+          {onRefereePress && (
+            <TouchableOpacity
+              style={[styles.refereeButton, { 
+                backgroundColor: PRIMARY_COLOR + '15',
+                borderColor: PRIMARY_COLOR + '30',
+              }]}
+              onPress={() => onRefereePress(match.id)}
+              activeOpacity={0.7}
+            >
+              <IconSymbol name="whistle.fill" size={12} color={PRIMARY_COLOR} />
+              <ThemedText style={[styles.refereeText, { color: PRIMARY_COLOR }]}>
+                Arbitrage
+              </ThemedText>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -126,17 +162,45 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress }: L
             />
           </TouchableOpacity>
 
-          <View style={[styles.scoreContainer, { 
-            backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f8f9fa',
-            borderColor: colors.text + '10',
-          }]}>
-            <ThemedText style={[styles.score, { color: colors.text }]}>
-              {scoreA}
-            </ThemedText>
-            <View style={[styles.scoreSeparator, { backgroundColor: colors.text + '25' }]} />
-            <ThemedText style={[styles.score, { color: colors.text }]}>
-              {scoreB}
-            </ThemedText>
+          <View style={styles.scoreColumn}>
+            <View style={[styles.scoreContainer, { 
+              backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f8f9fa',
+              borderColor: colors.text + '10',
+            }]}>
+              <ThemedText style={[styles.score, { color: colors.text }]}>
+                {scoreA}
+              </ThemedText>
+              <View style={[styles.scoreSeparator, { backgroundColor: colors.text + '25' }]} />
+              <ThemedText style={[styles.score, { color: colors.text }]}>
+                {scoreB}
+              </ThemedText>
+            </View>
+            
+            {/* Scores détaillés de chaque jeu */}
+            {gameScores.length > 0 && (
+              <View style={[styles.gameScoresContainer, { 
+                backgroundColor: colorScheme === 'dark' ? '#1f1f1f' : '#f0f0f0',
+                borderColor: colors.text + '08',
+              }]}>
+                {gameScores.map((game, index) => (
+                  <View key={index} style={styles.gameScoreRow}>
+                    <ThemedText style={[styles.gameScore, { 
+                      color: colors.text + '70',
+                      fontWeight: index === gameScores.length - 1 ? '700' : '500',
+                    }]}>
+                      {game.scoreA}
+                    </ThemedText>
+                    <View style={[styles.gameScoreSeparator, { backgroundColor: colors.text + '15' }]} />
+                    <ThemedText style={[styles.gameScore, { 
+                      color: colors.text + '70',
+                      fontWeight: index === gameScores.length - 1 ? '700' : '500',
+                    }]}>
+                      {game.scoreB}
+                    </ThemedText>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
 
           {/* Joueur 2 : Avatar à gauche, Nom à droite */}
@@ -294,6 +358,10 @@ const styles = StyleSheet.create({
     lineHeight: 13,
     marginTop: 0,
   },
+  scoreColumn: {
+    alignItems: 'center',
+    gap: 8,
+  },
   scoreContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -315,5 +383,42 @@ const styles = StyleSheet.create({
   scoreSeparator: {
     width: 1.5,
     height: 20,
+  },
+  gameScoresContainer: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 4,
+    minWidth: 60,
+  },
+  gameScoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  gameScore: {
+    fontSize: 12,
+    minWidth: 20,
+    textAlign: 'center',
+  },
+  gameScoreSeparator: {
+    width: 1,
+    height: 12,
+  },
+  refereeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  refereeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.1,
   },
 });

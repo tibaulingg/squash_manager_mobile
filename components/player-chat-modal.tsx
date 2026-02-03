@@ -11,7 +11,7 @@ import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { MatchCommentDTO, MatchDTO, PlayerDTO } from '@/types/api';
-import { getSeasonFromBoxMembership, getDefaultSeason } from '@/utils/season-helpers';
+import { getDefaultSeason, getSeasonFromBoxMembership } from '@/utils/season-helpers';
 
 interface PlayerChatModalProps {
   visible: boolean;
@@ -155,6 +155,7 @@ export function PlayerChatModal({
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [visibleTimestamps, setVisibleTimestamps] = useState<Set<string>>(new Set());
   const [acceptingDelay, setAcceptingDelay] = useState(false);
+  const [sentMessages, setSentMessages] = useState<Set<string>>(new Set());
 
   // Charger les informations des joueurs et trouver le match
   useEffect(() => {
@@ -235,13 +236,25 @@ export function PlayerChatModal({
     
       // L'API retourne MatchCommentDTO[] mais on peut les utiliser directement
       setMessages(comments as MatchCommentDTO[]);
+      
+      // Si le dernier message est de l'utilisateur, l'ajouter à sentMessages pour afficher "Envoyé"
+      if (comments.length > 0) {
+        const lastMessage = comments[comments.length - 1];
+        const lastMessagePlayerId = lastMessage.player_id || lastMessage.player?.id;
+        if (lastMessagePlayerId === currentPlayerId) {
+          // Attendre un petit délai pour simuler le chargement, puis afficher "Envoyé"
+          setTimeout(() => {
+            setSentMessages((prev) => new Set([...prev, lastMessage.id]));
+          }, 100);
+        }
+      }
     } catch (error) {
       console.error('Erreur chargement messages:', error);
       setMessages([]);
     } finally {
       setLoading(false);
     }
-  }, [matchId]);
+  }, [matchId, currentPlayerId]);
 
   // Charger les messages quand le modal s'ouvre
   useEffect(() => {
@@ -295,13 +308,41 @@ export function PlayerChatModal({
   const handleSendMessage = useCallback(async () => {
     if (!messageText.trim() || sending || !matchId) return;
 
+    const textToSend = messageText.trim();
+    const tempId = `temp-${Date.now()}-${Math.random()}`;
+    
+    // Créer un message temporaire pour l'affichage immédiat
+    const tempMessage: MatchCommentDTO = {
+      id: tempId,
+      match_id: matchId!,
+      player_id: currentPlayerId,
+      text: textToSend,
+      created_at: new Date().toISOString(),
+      player: currentPlayer || {
+        id: currentPlayerId,
+        first_name: '',
+        last_name: '',
+        email: '',
+        picture: null,
+      },
+    };
+
+    // Ajouter le message immédiatement à la liste (optimistic update)
+    setMessages((prev) => [...prev, tempMessage]);
+    setMessageText('');
+    
+    // Auto-scroll immédiatement
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+
     try {
       setSending(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       
       // Utiliser l'API de commentaires avec entity_type='conversation'
       // On utilise le matchId comme entity_id pour lier la conversation au match
-      const newComment = await api.addComment('conversation' as any, matchId!, currentPlayerId, messageText.trim());
+      const newComment = await api.addComment('conversation' as any, matchId!, currentPlayerId, textToSend);
       
       // S'assurer que le player_id est correct (au cas où l'API retournerait un mauvais ID)
       const commentWithCorrectPlayerId: MatchCommentDTO = {
@@ -309,23 +350,26 @@ export function PlayerChatModal({
         player_id: currentPlayerId, // Forcer le player_id à être celui du joueur actuel
       };
 
-      // Ajouter le message à la liste locale
-      setMessages((prev) => [...prev, commentWithCorrectPlayerId as MatchCommentDTO]);
+      // Remplacer le message temporaire par le vrai message
+      setMessages((prev) => 
+        prev.map(msg => msg.id === tempId ? commentWithCorrectPlayerId : msg)
+      );
       
-      setMessageText('');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      
-      // Auto-scroll
+      // Attendre un petit délai avant d'afficher "Envoyé" (simule l'attente de confirmation)
       setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+        setSentMessages((prev) => new Set([...prev, commentWithCorrectPlayerId.id]));
+      }, 300);
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
       console.error('Erreur envoi message:', error);
+      // Retirer le message temporaire en cas d'erreur
+      setMessages((prev) => prev.filter(msg => msg.id !== tempId));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
       setSending(false);
     }
-  }, [messageText, sending, matchId, currentPlayerId]);
+  }, [messageText, sending, matchId, currentPlayerId, currentPlayer]);
 
   // Suppression désactivée pour les messages de conversation
 
@@ -984,11 +1028,15 @@ export function PlayerChatModal({
                 </ThemedText>
               </View>
             ) : (
-              messages.map((message) => {
+              messages.map((message, index) => {
                 // Vérifier si c'est notre message en comparant player_id ou player.id
                 // Normaliser les IDs pour la comparaison (enlever les espaces, convertir en minuscules si nécessaire)
                 const messagePlayerId = message.player_id || message.player?.id;
                 const isOwnMessage = messagePlayerId === currentPlayerId;
+                
+                // Vérifier si c'est le dernier message de la conversation ET que c'est un message de l'utilisateur
+                const isLastMessage = index === messages.length - 1;
+                const isLastOwnMessage = isOwnMessage && isLastMessage;
 
                 // Parser la date correctement
                 let messageDate: Date;
@@ -1020,6 +1068,33 @@ export function PlayerChatModal({
                   messageDate = new Date();
                 }
                 
+                // Vérifier si le message précédent est du même auteur et envoyé récemment (grouper les messages)
+                let shouldGroupWithPrevious = false;
+                if (index > 0) {
+                  const previousMessage = messages[index - 1];
+                  const previousMessagePlayerId = previousMessage.player_id || previousMessage.player?.id;
+                  const isSameAuthor = previousMessagePlayerId === messagePlayerId;
+                  
+                  if (isSameAuthor && previousMessage.created_at) {
+                    // Parser la date du message précédent
+                    let prevDateString = String(previousMessage.created_at).trim();
+                    const hasPrevTimezone = prevDateString.endsWith('Z') || 
+                                           /[+-]\d{2}:\d{2}$/.test(prevDateString) ||
+                                           /[+-]\d{4}$/.test(prevDateString);
+                    if (!hasPrevTimezone) {
+                      prevDateString = prevDateString + 'Z';
+                    }
+                    const prevDate = new Date(prevDateString);
+                    
+                    if (!isNaN(prevDate.getTime())) {
+                      // Si les messages sont du même auteur et envoyés dans les 30 secondes, les grouper
+                      const timeDiff = messageDate.getTime() - prevDate.getTime();
+                      const thirtySeconds = 30 * 1000; // 30 secondes en millisecondes
+                      shouldGroupWithPrevious = timeDiff < thirtySeconds;
+                    }
+                  }
+                }
+                
                 // Pour déterminer le joueur qui a envoyé le message
                 const messagePlayer = message.player || (isOwnMessage ? currentPlayer : otherPlayer);
 
@@ -1029,9 +1104,10 @@ export function PlayerChatModal({
                     style={[
                       styles.messageItem,
                       isOwnMessage && styles.messageItemOwn,
+                      shouldGroupWithPrevious && styles.messageItemGrouped,
                     ]}
                   >
-                    {!isOwnMessage && messagePlayer && (
+                    {!isOwnMessage && messagePlayer && !shouldGroupWithPrevious && (
                       <PlayerAvatar
                         firstName={messagePlayer.first_name}
                         lastName={messagePlayer.last_name}
@@ -1039,62 +1115,79 @@ export function PlayerChatModal({
                         size={32}
                       />
                     )}
+                    {!isOwnMessage && shouldGroupWithPrevious && (
+                      <View style={{ width: 32 }} />
+                    )}
                     <View style={styles.messageBubbleWrapper}>
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={() => {
-                          setVisibleTimestamps(prev => {
-                            const newSet = new Set(prev);
-                            if (newSet.has(message.id)) {
-                              newSet.delete(message.id);
-                            } else {
-                              newSet.add(message.id);
-                            }
-                            return newSet;
-                          });
-                        }}
-                        style={[
-                          styles.messageBubble,
-                          {
-                            backgroundColor: isOwnMessage
-                              ? (colorScheme === 'dark' ? '#1E88E5' : '#2196F3')
-                              : colors.text + '10',
-                          },
-                        ]}
-                      >
-                        {!isOwnMessage && messagePlayer && (
-                          <ThemedText
-                            style={[
-                              styles.messageAuthor,
-                              { color: colors.text + '80' },
-                            ]}
-                          >
-                            {messagePlayer.first_name} {messagePlayer.last_name}
-                          </ThemedText>
-                        )}
-                        <ThemedText
+                      <View>
+                        <TouchableOpacity
+                          activeOpacity={0.8}
+                          onPress={() => {
+                            setVisibleTimestamps(prev => {
+                              const newSet = new Set(prev);
+                              if (newSet.has(message.id)) {
+                                newSet.delete(message.id);
+                              } else {
+                                newSet.add(message.id);
+                              }
+                              return newSet;
+                            });
+                          }}
                           style={[
-                            styles.messageText,
+                            styles.messageBubble,
                             {
-                              color: isOwnMessage ? '#FFFFFF' : colors.text,
+                              backgroundColor: isOwnMessage
+                                ? (colorScheme === 'dark' ? '#1E88E5' : '#2196F3')
+                                : colors.text + '10',
                             },
                           ]}
                         >
-                          {message.text}
-                        </ThemedText>
-                        {visibleTimestamps.has(message.id) && (
+                          {!isOwnMessage && messagePlayer && (
+                            <ThemedText
+                              style={[
+                                styles.messageAuthor,
+                                { color: colors.text + '80' },
+                              ]}
+                            >
+                              {messagePlayer.first_name} {messagePlayer.last_name}
+                            </ThemedText>
+                          )}
                           <ThemedText
                             style={[
-                              styles.messageDate,
+                              styles.messageText,
                               {
-                                color: isOwnMessage ? '#FFFFFF' + 'CC' : colors.text + '50',
+                                color: isOwnMessage ? '#FFFFFF' : colors.text,
                               },
                             ]}
                           >
-                            {formatFullTimestamp(messageDate)}
+                            {message.text}
+                          </ThemedText>
+                          {visibleTimestamps.has(message.id) && (
+                            <ThemedText
+                              style={[
+                                styles.messageDate,
+                                {
+                                  color: isOwnMessage ? '#FFFFFF' + 'CC' : colors.text + '50',
+                                },
+                              ]}
+                            >
+                              {formatFullTimestamp(messageDate)}
+                            </ThemedText>
+                          )}
+                        </TouchableOpacity>
+                        {isLastOwnMessage && sentMessages.has(message.id) && (
+                          <ThemedText
+                            style={[
+                              styles.messageSentIndicator,
+                              {
+                                color: colors.text + '60',
+                              },
+                            ]}
+                          >
+                            Envoyé
                           </ThemedText>
                         )}
-                      </TouchableOpacity>
+                      </View>
                     </View>
                     {/* Suppression désactivée pour les messages de conversation */}
                   </View>
@@ -1313,6 +1406,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row-reverse',
     alignItems: 'flex-end',
   },
+  messageItemGrouped: {
+    marginBottom: 2,
+  },
   messageBubbleWrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -1333,6 +1429,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '400',
+  },
+  messageSentIndicator: {
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '400',
+    alignSelf: 'flex-end',
+    marginRight: 4,
   },
   messageDate: {
     fontSize: 11,

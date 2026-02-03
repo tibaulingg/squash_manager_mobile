@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Squash22",
+    "name": "Tibox",
     "slug": "Squash22",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/favicon-logo-header.png",
-    "scheme": "squash22",
+    "scheme": "tibox",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {

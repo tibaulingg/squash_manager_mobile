@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,6 +22,7 @@ export default function LiveMatchesScreen() {
   const colors = Colors[colorScheme ?? 'light'];
   const { user, isAuthenticated } = useAuth();
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -65,8 +66,8 @@ export default function LiveMatchesScreen() {
 
   useEffect(() => {
     loadLiveMatches(false);
-    // Rafraîchir toutes les 30 secondes
-    const interval = setInterval(() => loadLiveMatches(false), 30000);
+    // Rafraîchir toutes les 5 secondes
+    const interval = setInterval(() => loadLiveMatches(false), 5000);
     return () => clearInterval(interval);
   }, [loadLiveMatches]);
 
@@ -159,6 +160,13 @@ export default function LiveMatchesScreen() {
                   onPlayerPress={(playerId) => {
                     setSelectedPlayerId(playerId);
                     setShowPlayerModal(true);
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                  onRefereePress={(matchId) => {
+                    router.push({
+                      pathname: '/referee',
+                      params: { matchId },
+                    });
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   }}
                 />

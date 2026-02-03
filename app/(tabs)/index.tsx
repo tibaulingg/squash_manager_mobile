@@ -7,10 +7,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ProfileScreen from '@/app/(tabs)/profil';
 import { AppBar } from '@/components/app-bar';
 import { AuthModal } from '@/components/auth-modal';
+import { GoldenRankingModal } from '@/components/golden-ranking-modal';
 import { PlayerChatModal } from '@/components/player-chat-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { WaitingListModal } from '@/components/waiting-list-modal';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNotifications } from '@/contexts/NotificationsContext';
@@ -76,6 +78,8 @@ export default function HomeScreen() {
   const [pendingDelayMatchId, setPendingDelayMatchId] = useState<string | null>(null);
   const [showChatModal, setShowChatModal] = useState(false);
   const [selectedPlayerForChat, setSelectedPlayerForChat] = useState<{ id: string; name: string; matchId?: string } | null>(null);
+  const [showGoldenRankingModal, setShowGoldenRankingModal] = useState(false);
+  const [showWaitingListModal, setShowWaitingListModal] = useState(false);
   const [boxRanking, setBoxRanking] = useState<Array<{
     player: PlayerDTO;
     points: number;
@@ -85,6 +89,7 @@ export default function HomeScreen() {
     position: number;
   }>>([]);
   const [lastFocusTime, setLastFocusTime] = useState<number>(0);
+  const [updatingNextBoxStatus, setUpdatingNextBoxStatus] = useState(false);
 
   const loadData = useCallback(async (isRefresh = false) => {
     if (!isAuthenticated || !user) {
@@ -333,6 +338,7 @@ export default function HomeScreen() {
     }
   }, [loadData, isAuthenticated, user]);
 
+
   // Recharger les données quand on revient sur l'onglet (pour mettre à jour après modification du profil)
   useFocusEffect(
     useCallback(() => {
@@ -352,6 +358,37 @@ export default function HomeScreen() {
     setRefreshing(true);
     // loadData(true) va déjà forcer le refresh des caches avec isRefresh=true
     await loadData(true);
+  };
+
+  const handleUpdateNextBoxStatus = async (status: string | null) => {
+    if (!currentPlayer || !user || currentPlayer.id !== user.id) return;
+    
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    try {
+      setUpdatingNextBoxStatus(true);
+      await api.updatePlayerNextBoxStatus(currentPlayer.id, status);
+      
+      // Invalider le cache des joueurs pour que l'appbar se mette à jour
+      api.clearPlayersCache();
+      
+      // Mettre à jour l'état local
+      setCurrentPlayer({
+        ...currentPlayer,
+        current_box: currentPlayer.current_box ? {
+          ...currentPlayer.current_box,
+          next_box_status: status,
+        } : null,
+      });
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error: any) {
+      console.error('Erreur mise à jour statut:', error);
+      Alert.alert('Erreur', 'Impossible de mettre à jour le statut');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setUpdatingNextBoxStatus(false);
+    }
   };
 
   const handleCall = async (phone: string) => {
@@ -384,13 +421,18 @@ export default function HomeScreen() {
     try {
       await api.requestMatchDelay(matchId, currentPlayer.id);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Fermer le modal
+      setShowDelayConfirmModal(false);
+      setPendingDelayMatchId(null);
       Alert.alert('Demande envoyée', 'Votre demande de report a été envoyée à votre adversaire');
-      await loadData();
+      // Attendre un peu pour laisser le serveur traiter, puis recharger
+      setTimeout(() => {
+        loadData(true);
+      }, 1000);
     } catch (error: any) {
       console.error('Erreur demande report:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Erreur', error.message || 'Impossible d\'envoyer la demande de report');
-    } finally {
       setShowDelayConfirmModal(false);
       setPendingDelayMatchId(null);
     }
@@ -416,8 +458,9 @@ export default function HomeScreen() {
     try {
       await api.acceptMatchDelay(matchId, currentPlayer.id);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Recharger les données avec refresh
+      await loadData(true);
       Alert.alert('Report accepté', 'Le report a été accepté. Le match sera reprogrammé.');
-      await loadData();
     } catch (error: any) {
       console.error('Erreur acceptation report:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -442,8 +485,9 @@ export default function HomeScreen() {
             try {
               await api.rejectMatchDelay(matchId, currentPlayer.id);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              // Recharger les données avec refresh
+              await loadData(true);
               Alert.alert('Report refusé', 'La demande de report a été refusée.');
-              await loadData();
             } catch (error: any) {
               console.error('Erreur refus report:', error);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -473,8 +517,9 @@ export default function HomeScreen() {
             try {
               await api.cancelMatchDelay(matchId, currentPlayer.id);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              // Recharger les données avec refresh
+              await loadData(true);
               Alert.alert('Demande annulée', 'Votre demande de report a été annulée.');
-              await loadData();
             } catch (error: any) {
               console.error('Erreur annulation report:', error);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -729,7 +774,26 @@ export default function HomeScreen() {
   if (!isAuthenticated) {
     return (
       <ThemedView style={styles.container}>
-        <AppBar />
+        <AppBar 
+          menuItems={[
+            {
+              label: 'Golden Ranking',
+              icon: 'trophy.fill',
+              onPress: () => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowGoldenRankingModal(true);
+              },
+            },
+            {
+              label: 'File d\'attente',
+              icon: 'clock.fill',
+              onPress: () => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowWaitingListModal(true);
+              },
+            },
+          ]}
+        />
         <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
         <ScrollView
           style={styles.scrollView}
@@ -803,7 +867,26 @@ export default function HomeScreen() {
   if (isAuthenticated && currentPlayer && !currentPlayer.current_box) {
   return (
     <ThemedView style={styles.container}>
-      <AppBar />
+      <AppBar 
+        menuItems={[
+          {
+            label: 'Golden Ranking',
+            icon: 'trophy.fill',
+            onPress: () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowGoldenRankingModal(true);
+            },
+          },
+          {
+            label: 'File d\'attente',
+            icon: 'clock.fill',
+            onPress: () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowWaitingListModal(true);
+            },
+          },
+        ]}
+      />
       <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[
@@ -960,7 +1043,26 @@ export default function HomeScreen() {
   // Vue connectée (personnalisée)
   return (
     <ThemedView style={styles.container}>
-      <AppBar />
+      <AppBar 
+        menuItems={[
+          {
+            label: 'Golden Ranking',
+            icon: 'trophy.fill',
+            onPress: () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowGoldenRankingModal(true);
+            },
+          },
+          {
+            label: 'File d\'attente',
+            icon: 'clock.fill',
+            onPress: () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowWaitingListModal(true);
+            },
+          },
+        ]}
+      />
       <AuthModal visible={showAuthModal} onClose={() => setShowAuthModal(false)} />
       <ScrollView
         style={styles.scrollView}
@@ -978,6 +1080,153 @@ export default function HomeScreen() {
             />
           }
       >
+        {/* Réinscription prochaine série - compacte */}
+        {currentPlayer?.current_box && !currentPlayer.current_box.next_box_status && (
+          <View style={[styles.reinscriptionCard, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <ThemedText style={[styles.reinscriptionTitle, { color: colors.text }]}>
+              Prochaine série de box
+            </ThemedText>
+            <View style={styles.reinscriptionButtons}>
+              <TouchableOpacity
+                style={[styles.reinscriptionButton, { borderColor: colors.text + '20' }]}
+                onPress={() => handleUpdateNextBoxStatus('continue')}
+                disabled={updatingNextBoxStatus}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="checkmark.circle.fill" size={18} color="#10b981" />
+                <ThemedText style={[styles.reinscriptionButtonText, { color: colors.text }]}>
+                  Je continue
+                </ThemedText>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.reinscriptionButton, { borderColor: colors.text + '20' }]}
+                onPress={() => handleUpdateNextBoxStatus('stop')}
+                disabled={updatingNextBoxStatus}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="xmark.circle.fill" size={18} color="#ef4444" />
+                <ThemedText style={[styles.reinscriptionButtonText, { color: colors.text }]}>
+                  Je m'arrête
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Section Demandes de report */}
+        {currentPlayer && boxMatches.length > 0 && (() => {
+
+          // Récupérer toutes les demandes de report en cours qui concernent le joueur actuel
+          const delayRequests = boxMatches
+            .filter(item => {
+              const match = item.match;
+              const isPlayerA = match.player_a_id === currentPlayer.id;
+              const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
+
+              const delayStatus = match.delayed_status;
+              
+              // Exclure les demandes acceptées, rejetées ou annulées
+              // Une demande est en attente si :
+              // - delayStatus est 'pending' OU
+              // - delayStatus est null/undefined ET delayed_requested_at existe ET delayed_resolved_at n'existe pas
+              const hasRequestedAt = !!match.delayed_requested_at;
+              const hasResolvedAt = !!match.delayed_resolved_at;
+              const isPending = delayStatus === 'pending' || 
+                               (delayStatus === null && hasRequestedAt && !hasResolvedAt) ||
+                               (!delayStatus && hasRequestedAt && !hasResolvedAt);
+              
+
+              // Inclure seulement les demandes en attente qui concernent le joueur actuel
+              if (!isPending) {
+                return false;
+              }
+              
+              // Vérifier qu'il y a bien une demande (delayed_requested_at doit exister)
+              if (!hasRequestedAt) {
+                return false;
+              }
+              
+              return true;
+            })
+            .map(item => ({
+              match: item.match,
+              opponent: item.opponent,
+            }));
+
+          if (delayRequests.length === 0) {
+            return null;
+          }
+     
+          return (
+            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+              <View style={styles.cardHeader}>
+                <View style={styles.cardHeaderLeft}>
+                  <View style={[styles.iconContainer, { backgroundColor: '#f59e0b' + '20' }]}>
+                    <IconSymbol name="exclamationmark.triangle.fill" size={18} color="#f59e0b" />
+                  </View>
+                  <ThemedText style={styles.cardTitle}>Demandes de report</ThemedText>
+                </View>
+              </View>
+
+              <View style={styles.delayRequestsList}>
+                {delayRequests.map((delayItem, index) => (
+                  <View
+                    key={delayItem.match.id}
+                    style={[
+                      styles.delayRequestItem,
+                      index !== delayRequests.length - 1 && [
+                        styles.delayRequestItemBorder,
+                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
+                      ],
+                    ]}
+                  >
+                    <View style={styles.delayRequestInfo}>
+                      <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
+                        <ThemedText style={styles.smallAvatarText}>
+                          {getInitials(delayItem.opponent.first_name, delayItem.opponent.last_name)}
+                        </ThemedText>
+                      </View>
+                      <View style={styles.delayRequestDetails}>
+                        <ThemedText style={styles.delayRequestOpponent}>
+                          {delayItem.opponent.first_name} {delayItem.opponent.last_name}
+                        </ThemedText>
+                        {delayItem.match.scheduled_at ? (() => {
+                          const date = new Date(delayItem.match.scheduled_at);
+                          const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+                          const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+                          const day = days[date.getDay()];
+                          const month = months[date.getMonth()];
+                          const dayNumber = date.getDate();
+                          const hours = date.getHours().toString().padStart(2, '0');
+                          const minutes = date.getMinutes().toString().padStart(2, '0');
+                          return (
+                            <View style={styles.matchDateContainer}>
+                              <ThemedText style={[styles.delayRequestDate, { color: colors.text }]}>
+                                {day} {dayNumber} {month}
+                              </ThemedText>
+                              <ThemedText style={[styles.delayRequestTime, { color: colors.text, opacity: 0.5 }]}>
+                                {' • '}{hours}:{minutes}
+                              </ThemedText>
+                            </View>
+                          );
+                        })() : (
+                          <ThemedText style={[styles.delayRequestDate, { color: colors.text, opacity: 0.5 }]}>
+                            Date non définie
+                          </ThemedText>
+                        )}
+                      </View>
+                    </View>
+                    <View style={styles.delayRequestActions}>
+                      {renderDelayActions(delayItem.match, delayItem.opponent)}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </View>
+          );
+        })()}
+
         {/* Mon box */}
         {currentPlayer?.current_box && (
           <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
@@ -1000,12 +1249,17 @@ export default function HomeScreen() {
 
             <View style={styles.matchesList}>
               {boxMatches.map((item, index) => {
+                const isNextMatch = nextMatch && nextMatch.match.id === item.match.id && !item.isCompleted;
                 return (
                   <View
                     key={item.match.id}
                     style={[
                       styles.matchItem,
-                      index !== boxMatches.length - 1 && [
+                      isNextMatch && [
+                        styles.nextMatchHighlight,
+                        { backgroundColor: PRIMARY_COLOR + '10', borderColor: PRIMARY_COLOR, borderWidth: 2 },
+                      ],
+                      !isNextMatch && index !== boxMatches.length - 1 && [
                         styles.matchItemBorder,
                         { borderBottomColor: colors.text + '15', borderBottomWidth: 1 },
                       ],
@@ -1142,7 +1396,7 @@ export default function HomeScreen() {
                                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                 >
                                   <View style={styles.chatButtonContainer}>
-                                    <IconSymbol name="bubble.left.and.bubble.right.fill" size={18} color={colors.text + 'CC'} />
+                                    <IconSymbol name="message.fill" size={18} color={colors.text + '80'} />
                                     {hasUnreadMessages && (
                                       <View style={[styles.unreadBadge, { backgroundColor: '#ef4444' }]} />
                                     )}
@@ -1164,7 +1418,7 @@ export default function HomeScreen() {
         {/* Mini classement du box */}
         {currentPlayer?.current_box && boxRanking.length > 0 && (
           <View style={[styles.rankingCard, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-            <View style={[styles.cardHeader, { marginBottom: 8 }]}>
+            <View style={[styles.cardHeader, { marginBottom: 12 }]}>
               <View style={styles.cardHeaderLeft}>
                 <View style={[styles.iconContainer, { backgroundColor: PRIMARY_COLOR + '20', width: 24, height: 24 }]}>
                   <IconSymbol name="trophy.fill" size={14} color={PRIMARY_COLOR} />
@@ -1174,76 +1428,63 @@ export default function HomeScreen() {
             </View>
             
             <View style={styles.rankingList}>
-              {/* Header */}
-              <View style={[styles.rankingItem, styles.rankingHeader]}>
-                <View style={styles.rankingPosition}>
-                  <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10 }]}>
-                    #
-                  </ThemedText>
-                </View>
-                <View style={styles.rankingPlayerInfo}>
-                  <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10 }]}>
-                    Joueur
-                  </ThemedText>
-                </View>
-                <View style={styles.rankingStats}>
-                  <View style={styles.rankingStatsRow}>
-                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 20, textAlign: 'right' }]}>
-                      M
-                    </ThemedText>
-                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 20, textAlign: 'right' }]}>
-                      {' '}V
-                    </ThemedText>
-                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 20, textAlign: 'right' }]}>
-                      {' '}D
-                    </ThemedText>
-                    <ThemedText style={[styles.rankingHeaderText, { color: colors.text, opacity: 0.6, fontSize: 10, minWidth: 25, textAlign: 'right' }]}>
-                      {' '}pts
-                    </ThemedText>
-                  </View>
-                </View>
-              </View>
-              
               {boxRanking.map((item, index) => {
                 const isFirst = item.position === 1;
-                const isLast = item.position === boxRanking.length;
                 const isCurrentUser = item.player.id === currentPlayer.id;
                 return (
                   <View
                     key={item.player.id}
                     style={[
                       styles.rankingItem,
+                      isCurrentUser && { backgroundColor: PRIMARY_COLOR + '08' },
                       index !== boxRanking.length - 1 && [
                         styles.rankingItemBorder,
-                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
+                        { borderBottomColor: colors.text + '10', borderBottomWidth: 0.5 },
                       ],
                     ]}
                   >
                     <View style={styles.rankingPosition}>
-                      <ThemedText style={[styles.rankingPositionText, { 
-                        color: isFirst ? '#10b981' : isLast ? '#ef4444' : colors.text + '60',
-                        fontSize: 11,
-                      }]}>
-                        #{item.position}
-                      </ThemedText>
+                      {isFirst ? (
+                        <View style={[styles.rankingPositionBadge, { backgroundColor: '#fbbf24' + '20' }]}>
+                          <ThemedText style={[styles.rankingPositionText, { 
+                            color: '#fbbf24',
+                            fontSize: 13,
+                            fontWeight: '700',
+                          }]}>
+                            1
+                          </ThemedText>
+                        </View>
+                      ) : (
+                        <ThemedText style={[styles.rankingPositionText, { 
+                          color: colors.text + '50',
+                          fontSize: 13,
+                          fontWeight: '600',
+                        }]}>
+                          {item.position}
+                        </ThemedText>
+                      )}
                     </View>
                     <View style={styles.rankingPlayerInfo}>
-                      <ThemedText style={[styles.rankingPlayerName, { color: colors.text, fontSize: 12 }]} numberOfLines={1}>
+                      <ThemedText style={[styles.rankingPlayerName, { 
+                        color: isCurrentUser ? PRIMARY_COLOR : colors.text, 
+                        fontSize: 14,
+                        fontWeight: isCurrentUser ? '600' : '500',
+                      }]} numberOfLines={1}>
                         {item.player.first_name} {item.player.last_name}
                       </ThemedText>
                     </View>
                     <View style={styles.rankingStats}>
                       <View style={styles.rankingStatsRow}>
-                        <ThemedText style={[styles.rankingStatsText, { color: colors.text, opacity: 0.6, fontSize: 10, fontWeight: '500', minWidth: 20, textAlign: 'right' }]}>
+                        <ThemedText style={[styles.rankingStatsText, { color: colors.text + '70', fontSize: 12, fontWeight: '500', minWidth: 24, textAlign: 'right' }]}>
                           {item.matches}
                         </ThemedText>
-                        <ThemedText style={[styles.rankingStatsText, { color: '#10b981', fontSize: 10, fontWeight: '500', minWidth: 20, textAlign: 'right' }]}>
+                        <ThemedText style={[styles.rankingStatsText, { color: '#10b981', fontSize: 12, fontWeight: '600', minWidth: 24, textAlign: 'right' }]}>
                           {item.wins}
                         </ThemedText>
-                        <ThemedText style={[styles.rankingStatsText, { color: '#ef4444', fontSize: 10, fontWeight: '500', minWidth: 20, textAlign: 'right' }]}>
+                        <ThemedText style={[styles.rankingStatsText, { color: '#ef4444', fontSize: 12, fontWeight: '600', minWidth: 24, textAlign: 'right' }]}>
                           {item.losses}
                         </ThemedText>
-                        <ThemedText style={[styles.rankingStatsText, { color: colors.text, fontSize: 10, fontWeight: '500', minWidth: 25, textAlign: 'right' }]}>
+                        <ThemedText style={[styles.rankingStatsText, { color: colors.text, fontSize: 13, fontWeight: '700', minWidth: 32, textAlign: 'right' }]}>
                           {item.points}
                         </ThemedText>
                       </View>
@@ -1254,119 +1495,6 @@ export default function HomeScreen() {
             </View>
           </View>
         )}
-
-        {/* Section Demandes de report */}
-        {currentPlayer && boxMatches.length > 0 && (() => {
-
-          // Récupérer toutes les demandes de report en cours qui concernent le joueur actuel
-          const delayRequests = boxMatches
-            .filter(item => {
-              const match = item.match;
-              const isPlayerA = match.player_a_id === currentPlayer.id;
-              const opponentId = isPlayerA ? match.player_b_id : match.player_a_id;
-
-              const delayStatus = match.delayed_status;
-              
-              // Exclure les demandes acceptées, rejetées ou annulées
-              // Une demande est en attente si :
-              // - delayStatus est 'pending' OU
-              // - delayStatus est null/undefined ET delayed_requested_at existe ET delayed_resolved_at n'existe pas
-              const hasRequestedAt = !!match.delayed_requested_at;
-              const hasResolvedAt = !!match.delayed_resolved_at;
-              const isPending = delayStatus === 'pending' || 
-                               (delayStatus === null && hasRequestedAt && !hasResolvedAt) ||
-                               (!delayStatus && hasRequestedAt && !hasResolvedAt);
-              
-
-              // Inclure seulement les demandes en attente qui concernent le joueur actuel
-              if (!isPending) {
-                return false;
-              }
-              
-              // Vérifier qu'il y a bien une demande (delayed_requested_at doit exister)
-              if (!hasRequestedAt) {
-                return false;
-              }
-              
-              return true;
-            })
-            .map(item => ({
-              match: item.match,
-              opponent: item.opponent,
-            }));
-
-          if (delayRequests.length === 0) {
-            return null;
-          }
-     
-          return (
-            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-              <View style={styles.cardHeader}>
-                <View style={styles.cardHeaderLeft}>
-                  <View style={[styles.iconContainer, { backgroundColor: '#f59e0b' + '20' }]}>
-                    <IconSymbol name="exclamationmark.triangle.fill" size={18} color="#f59e0b" />
-                  </View>
-                  <ThemedText style={styles.cardTitle}>Demandes de report</ThemedText>
-                </View>
-              </View>
-
-              <View style={styles.delayRequestsList}>
-                {delayRequests.map((delayItem, index) => (
-                  <View
-                    key={delayItem.match.id}
-                    style={[
-                      styles.delayRequestItem,
-                      index !== delayRequests.length - 1 && [
-                        styles.delayRequestItemBorder,
-                        { borderBottomColor: colors.text + '30', borderBottomWidth: 1 },
-                      ],
-                    ]}
-                  >
-                    <View style={styles.delayRequestInfo}>
-                      <View style={[styles.smallAvatar, { backgroundColor: AVATAR_COLOR }]}>
-                        <ThemedText style={styles.smallAvatarText}>
-                          {getInitials(delayItem.opponent.first_name, delayItem.opponent.last_name)}
-                        </ThemedText>
-                      </View>
-                      <View style={styles.delayRequestDetails}>
-                        <ThemedText style={styles.delayRequestOpponent}>
-                          {delayItem.opponent.first_name} {delayItem.opponent.last_name}
-                        </ThemedText>
-                        {delayItem.match.scheduled_at ? (() => {
-                          const date = new Date(delayItem.match.scheduled_at);
-                          const days = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
-                          const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
-                          const day = days[date.getDay()];
-                          const month = months[date.getMonth()];
-                          const dayNumber = date.getDate();
-                          const hours = date.getHours().toString().padStart(2, '0');
-                          const minutes = date.getMinutes().toString().padStart(2, '0');
-                          return (
-                            <View style={styles.matchDateContainer}>
-                              <ThemedText style={[styles.delayRequestDate, { color: colors.text }]}>
-                                {day} {dayNumber} {month}
-                              </ThemedText>
-                              <ThemedText style={[styles.delayRequestTime, { color: colors.text, opacity: 0.5 }]}>
-                                {' • '}{hours}:{minutes}
-                              </ThemedText>
-                            </View>
-                          );
-                        })() : (
-                          <ThemedText style={[styles.delayRequestDate, { color: colors.text, opacity: 0.5 }]}>
-                            Date non définie
-                          </ThemedText>
-                        )}
-                      </View>
-                    </View>
-                    <View style={styles.delayRequestActions}>
-                      {renderDelayActions(delayItem.match, delayItem.opponent)}
-                    </View>
-                  </View>
-                ))}
-              </View>
-            </View>
-          );
-        })()}
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -1456,6 +1584,18 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
+      {/* Modal Golden Ranking */}
+      <GoldenRankingModal
+        visible={showGoldenRankingModal}
+        onClose={() => setShowGoldenRankingModal(false)}
+      />
+
+      {/* Modal File d'attente */}
+      <WaitingListModal
+        visible={showWaitingListModal}
+        onClose={() => setShowWaitingListModal(false)}
+      />
+
       </ThemedView>
   );
 }
@@ -1469,6 +1609,37 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 20,
+  },
+  reinscriptionCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  reinscriptionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  reinscriptionButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  reinscriptionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  reinscriptionButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   loadingContainer: {
     flex: 1,
@@ -1778,9 +1949,10 @@ const styles = StyleSheet.create({
   rankingItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    gap: 12,
+    borderRadius: 8,
   },
   rankingHeader: {
     paddingBottom: 8,
@@ -1795,31 +1967,40 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   rankingPosition: {
-    minWidth: 28,
-    alignItems: 'flex-start',
+    minWidth: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   rankingPositionText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '600',
+  },
+  rankingPositionBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   rankingPlayerInfo: {
     flex: 1,
     minWidth: 0,
   },
   rankingPlayerName: {
-    fontSize: 12,
-    fontWeight: '400',
+    fontSize: 14,
+    fontWeight: '500',
   },
   rankingStats: {
-    minWidth: 80,
+    minWidth: 100,
     alignItems: 'flex-end',
   },
   rankingStatsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
   rankingStatsText: {
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '500',
   },
   delayRequestInfo: {
@@ -1847,7 +2028,7 @@ const styles = StyleSheet.create({
   matchDateContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 1,
+    marginTop: -2,
   },
   matchTime: {
     fontSize: 11,
@@ -1864,8 +2045,15 @@ const styles = StyleSheet.create({
   matchesList: {
     gap: 0,
   },
+  nextMatchHighlight: {
+    borderRadius: 12,
+    marginHorizontal: -4,
+    marginVertical: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
   matchItem: {
-    paddingVertical: 12,
+    paddingVertical: 6,
   },
   matchItemContent: {
     flexDirection: 'row',
@@ -1879,18 +2067,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
-    gap: 10,
+    gap: 8,
   },
   smallAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
   smallAvatarText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: '#FFFFFF',
   },
@@ -1922,6 +2109,10 @@ const styles = StyleSheet.create({
   matchActionIconButton: {
     padding: 6,
     borderRadius: 8,
+    minWidth: 36,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chatButtonContainer: {
     position: 'relative',

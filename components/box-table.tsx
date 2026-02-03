@@ -17,6 +17,7 @@ interface Player {
   firstName: string;
   lastName: string;
   pictureUrl?: string | null;
+  nextBoxStatus?: string | null; // 'continue' pour réinscrit, 'stop' pour arrêt
 }
 
 interface BoxTableProps {
@@ -63,8 +64,8 @@ const getInitials = (firstName: string, lastName: string): string => {
   return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
 };
 
-// Couleurs d'avatar adaptées au thème
-const getAvatarColors = (colorScheme: 'light' | 'dark') => {
+// Couleurs d'avatar adaptées au thème - sobres et professionnelles
+const getAvatarColors = (colorScheme: 'light' | 'dark', index?: number) => {
   if (colorScheme === 'dark') {
     return {
       backgroundColor: '#4B5563', // Gris moyen pour dark
@@ -77,13 +78,13 @@ const getAvatarColors = (colorScheme: 'light' | 'dark') => {
   };
 };
 
-// Formater la date
+// Formater la date sur deux lignes
 const formatDate = (date: Date): string => {
   const day = date.getDate().toString().padStart(2, '0');
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
   const hours = date.getHours().toString().padStart(2, '0');
   const minutes = date.getMinutes().toString().padStart(2, '0');
-  return `${day}/${month} ${hours}:${minutes}`;
+  return `${day}/${month}\n${hours}:${minutes}`;
 };
 
 export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
@@ -218,7 +219,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
         text: formatDate(match.scheduledDate),
         isWin: null,
         isScheduled: true,
-        backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
+        backgroundColor: '#ffffff',
         textColor: colorScheme === 'dark' ? '#9ca3af' : '#666',
       };
     }
@@ -241,7 +242,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
           styles.headerCell, 
           { 
             width: firstColumnWidth,
-            backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
+            backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
           }
         ]}>
           <ThemedText style={styles.headerText}></ThemedText>
@@ -256,7 +257,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                 styles.headerCell, 
                 { 
                   width: playerColumnWidth,
-                  backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
+                  backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
                 }
               ]}
               onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
@@ -273,9 +274,9 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                   <View style={[
                     styles.avatar,
                     styles.headerAvatar,
-                    { backgroundColor: getAvatarColors(colorScheme ?? 'light').backgroundColor }
+                    { backgroundColor: getAvatarColors(colorScheme ?? 'light', index).backgroundColor }
                   ]}>
-                    <Text style={[styles.avatarText, { color: getAvatarColors(colorScheme ?? 'light').textColor }]}>
+                    <Text style={[styles.avatarText, { color: getAvatarColors(colorScheme ?? 'light', index).textColor }]}>
                       {getInitials(player.firstName, player.lastName)}
                     </Text>
                   </View>
@@ -298,7 +299,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
           styles.totalColumn, 
           { 
             width: totalColumnWidth,
-            backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f9f9f9',
+            backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
           }
         ]}>
           <ThemedText style={styles.headerText}>Total</ThemedText>
@@ -306,8 +307,20 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
       </View>
 
       {/* Lignes de données */}
-      {sortedPlayers.map((player, rowIndex) => (
-        <View key={player.id} style={styles.dataRow}>
+      {sortedPlayers.map((player, rowIndex) => {
+        // Déterminer la couleur de bordure selon le statut de réinscription
+        const borderColor = player.nextBoxStatus === 'continue' ? '#10b981' : // Vert pour réinscrit
+                           player.nextBoxStatus === 'stop' ? '#ef4444' : // Rouge pour arrêt
+                           undefined; // Pas de bordure si pas de statut
+        
+        return (
+        <View 
+          key={player.id} 
+          style={styles.dataRow}
+        >
+          {borderColor && (
+            <View style={[styles.reinscriptionBorder, { backgroundColor: borderColor }]} />
+          )}
           {/* Nom du joueur avec avatar */}
           {(() => {
             const PlayerComponent = onPlayerPress ? TouchableOpacity : View;
@@ -318,7 +331,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                   styles.playerNameCell, 
                   { 
                     width: firstColumnWidth,
-                    backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f5f5f5',
+                    backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
                   }
                 ]}
                 onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
@@ -335,9 +348,9 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                     <View style={[
                       styles.avatar,
                       styles.verticalAvatar,
-                      { backgroundColor: getAvatarColors(colorScheme ?? 'light').backgroundColor }
+                      { backgroundColor: getAvatarColors(colorScheme ?? 'light', rowIndex).backgroundColor }
                     ]}>
-                      <Text style={[styles.avatarTextVertical, { color: getAvatarColors(colorScheme ?? 'light').textColor }]}>
+                      <Text style={[styles.avatarTextVertical, { color: getAvatarColors(colorScheme ?? 'light', rowIndex).textColor }]}>
                         {getInitials(player.firstName, player.lastName)}
                       </Text>
                     </View>
@@ -395,6 +408,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                     result.isScheduled && styles.scheduledText,
                     { color: result.textColor },
                   ]}
+                  numberOfLines={2}
                 >
                   {result.text}
                 </Text>
@@ -408,7 +422,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
             styles.totalCell, 
             { 
               width: totalColumnWidth,
-              backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f0f0f0',
+              backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
             }
           ]}>
             <ThemedText style={styles.totalText}>
@@ -416,7 +430,8 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
             </ThemedText>
           </View>
         </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -435,6 +450,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB',
+    position: 'relative',
+  },
+  reinscriptionBorder: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    zIndex: 1,
   },
   cell: {
     padding: 1,
@@ -452,6 +476,8 @@ const styles = StyleSheet.create({
   totalColumn: {
     borderLeftWidth: 2,
     borderLeftColor: '#D1D5DB',
+    borderRightWidth: 2,
+    borderRightColor: '#D1D5DB',
   },
   playerNameCell: {
     borderRightWidth: 1,
@@ -554,16 +580,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     textAlign: 'center',
+    lineHeight: 12,
   },
   scheduledText: {
     fontSize: 8,
     fontWeight: '400',
     opacity: 0.7,
     color: '#666',
+    lineHeight: 10,
   },
   totalCell: {
     borderLeftWidth: 2,
     borderLeftColor: '#D1D5DB',
+    borderRightWidth: 2,
+    borderRightColor: '#D1D5DB',
   },
   totalText: {
     fontSize: 11,

@@ -36,9 +36,14 @@ interface AppBarProps {
     label?: string;
     onPress: () => void;
   };
+  rightActions?: Array<{
+    icon: string;
+    label?: string;
+    onPress: () => void;
+  }>;
 }
 
-export function AppBar({ title, menuItems, leftIcon, rightAction }: AppBarProps) {
+export function AppBar({ title, menuItems, leftIcon, rightAction, rightActions }: AppBarProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const insets = useSafeAreaInsets();
@@ -104,7 +109,7 @@ export function AppBar({ title, menuItems, leftIcon, rightAction }: AppBarProps)
   }, [segments, title]);
 
   const handleAvatarPress = () => {
-    if (!isAuthenticated || !currentPlayer) {
+    if (!isAuthenticated || !user) {
       // Rediriger vers l'authentification si nécessaire
       return;
     }
@@ -149,28 +154,46 @@ export function AppBar({ title, menuItems, leftIcon, rightAction }: AppBarProps)
           </View>
           
           <View style={styles.rightSection}>
-            {rightAction && (
+            {/* Actions multiples à droite */}
+            {rightActions && rightActions.map((action, index) => (
+              <TouchableOpacity
+                key={index}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  action.onPress();
+                }}
+                activeOpacity={0.6}
+                style={styles.actionButton}
+              >
+                <IconSymbol 
+                  name={action.icon as ComponentProps<typeof IconSymbol>['name']} 
+                  size={22} 
+                  color={colors.text} 
+                />
+                {action.label && (
+                  <ThemedText style={[styles.actionButtonLabel, { color: colors.text }]}>
+                    {action.label}
+                  </ThemedText>
+                )}
+              </TouchableOpacity>
+            ))}
+            {/* Action unique à droite (pour compatibilité) */}
+            {!rightActions && rightAction && (
               <TouchableOpacity
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   rightAction.onPress();
                 }}
-                activeOpacity={0.7}
-                style={[
-                  styles.actionButton,
-                  {
-                    backgroundColor: PRIMARY_COLOR + '15',
-                    borderColor: PRIMARY_COLOR + '30',
-                  },
-                ]}
+                activeOpacity={0.6}
+                style={styles.actionButton}
               >
                 <IconSymbol 
                   name={rightAction.icon as ComponentProps<typeof IconSymbol>['name']} 
-                  size={18} 
-                  color={PRIMARY_COLOR} 
+                  size={22} 
+                  color={colors.text} 
                 />
                 {rightAction.label && (
-                  <ThemedText style={[styles.actionButtonLabel, { color: PRIMARY_COLOR }]}>
+                  <ThemedText style={[styles.actionButtonLabel, { color: colors.text }]}>
                     {rightAction.label}
                   </ThemedText>
                 )}
@@ -278,10 +301,10 @@ export function AppBar({ title, menuItems, leftIcon, rightAction }: AppBarProps)
       </View>
 
       {/* Modal de profil */}
-      {showProfileModal && currentPlayer && (
+      {showProfileModal && user && (
         <ProfileScreen
           isModal={true}
-          playerId={currentPlayer.id}
+          playerId={user.id}
           onClose={() => {
             setShowProfileModal(false);
           }}
@@ -328,22 +351,27 @@ export function AppBar({ title, menuItems, leftIcon, rightAction }: AppBarProps)
                   key={index}
                   style={[
                     styles.menuItem,
-                    index !== menuItems.length - 1 && { borderBottomColor: colors.text + '15' },
+                    { backgroundColor: colors.background },
+                    index === 0 && styles.menuItemFirst,
+                    index === menuItems.length - 1 && styles.menuItemLast,
+                    index !== menuItems.length - 1 && { borderBottomColor: colors.text + '10' },
                   ]}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     setShowMenu(false);
                     item.onPress();
                   }}
-                  activeOpacity={0.7}
+                  activeOpacity={0.6}
                 >
                   {item.icon && (
-                    <IconSymbol name={item.icon as ComponentProps<typeof IconSymbol>['name']} size={20} color={colors.text} style={styles.menuItemIcon} />
+                    <View style={[styles.menuItemIconContainer, { backgroundColor: PRIMARY_COLOR + '10' }]}>
+                      <IconSymbol name={item.icon as ComponentProps<typeof IconSymbol>['name']} size={18} color={PRIMARY_COLOR} />
+                    </View>
                   )}
-                  <ThemedText style={[styles.menuItemText, { color: colors.text }]}>
+                  <ThemedText style={[styles.menuItemText, { color: colors.text }]} numberOfLines={1}>
                     {item.label}
                   </ThemedText>
-                  <IconSymbol name="chevron.right" size={16} color={colors.text + '40'} />
+                  <IconSymbol name="chevron.right" size={14} color={colors.text + '30'} />
                 </TouchableOpacity>
               ))}
             </View>
@@ -432,10 +460,9 @@ const styles = StyleSheet.create({
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    justifyContent: 'center',
+    padding: 8,
     borderRadius: 8,
-    borderWidth: 1,
     gap: 6,
   },
   actionButtonLabel: {
@@ -476,13 +503,14 @@ const styles = StyleSheet.create({
     paddingRight: 20,
   },
   menuContainer: {
-    minWidth: 200,
-    borderRadius: 12,
-    borderWidth: 1,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 8,
+    minWidth: 260,
+    maxWidth: 320,
+    borderRadius: 14,
+    borderWidth: 0.5,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 15,
     overflow: 'hidden',
   },
   menuItem: {
@@ -490,15 +518,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     paddingHorizontal: 16,
-    borderBottomWidth: 1,
+    borderBottomWidth: 0.5,
     gap: 12,
+    minHeight: 50,
   },
-  menuItemIcon: {
-    width: 20,
+  menuItemFirst: {
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+  },
+  menuItemLast: {
+    borderBottomWidth: 0,
+    borderBottomLeftRadius: 14,
+    borderBottomRightRadius: 14,
+  },
+  menuItemIconContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   menuItemText: {
     flex: 1,
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 17,
+    fontWeight: '400',
+    letterSpacing: -0.2,
   },
 });

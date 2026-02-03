@@ -62,6 +62,7 @@ export interface MatchDTO {
   running: boolean;
   running_since: string | null;
   terrain_number: number | null;
+  live_score: string | null;
 }
 
 // Compétition

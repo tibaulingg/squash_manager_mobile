@@ -55,6 +55,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         created_at: notif.created_at || new Date().toISOString(), // Fallback si date manquante
       }));
       setNotifications(normalizedNotifications);
+      
+      // Mettre à jour le badge système avec le nombre de notifications non lues
+      const unreadCount = normalizedNotifications.filter((n) => !n.read).length;
+      await Notifications.setBadgeCountAsync(unreadCount);
     } catch (error) {
       console.error('❌ Erreur lors du chargement des notifications:', error);
     } finally {
@@ -170,9 +174,15 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const markAsRead = useCallback(async (notificationId: string, playerId: string) => {
     try {
       await api.markNotificationAsRead(notificationId, playerId);
-      setNotifications((prev) =>
-        prev.map((notif) => (notif.id === notificationId ? { ...notif, read: true } : notif))
-      );
+      setNotifications((prev) => {
+        const updated = prev.map((notif) => (notif.id === notificationId ? { ...notif, read: true } : notif));
+        // Mettre à jour le badge système avec le nouveau nombre de notifications non lues
+        const unreadCount = updated.filter((n) => !n.read).length;
+        Notifications.setBadgeCountAsync(unreadCount).catch(err => 
+          console.error('❌ Erreur lors de la mise à jour du badge:', err)
+        );
+        return updated;
+      });
     } catch (error) {
       console.error('❌ Erreur lors du marquage de la notification:', error);
       throw error;
@@ -186,6 +196,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     try {
       await api.markAllNotificationsAsRead(playerId);
       setNotifications((prev) => prev.map((notif) => ({ ...notif, read: true })));
+      // Mettre à jour le badge système à 0 car toutes les notifications sont lues
+      await Notifications.setBadgeCountAsync(0);
     } catch (error) {
       console.error('❌ Erreur lors du marquage de toutes les notifications:', error);
       throw error;

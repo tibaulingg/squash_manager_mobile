@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, RefreshControl, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +14,7 @@ import { PlayerChatModal } from '@/components/player-chat-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { WaitingListModal } from '@/components/waiting-list-modal';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -41,11 +43,13 @@ interface BoxData {
   matches: { [key: string]: Match };
 }
 
-const FAVORITES_STORAGE_KEY = '@squash22_box_favorites';
+const FAVORITES_STORAGE_KEY = '@tibox_box_favorites';
+const SELECTED_COMPETITION_KEY = '@tibox_selected_competition';
 
 export default function BoxScreen() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
+  const router = useRouter();
   const { height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const scrollViewRef = useRef<ScrollView>(null);
@@ -63,12 +67,22 @@ export default function BoxScreen() {
   const [liveMatches, setLiveMatches] = useState<MatchDTO[]>([]);
   const [allBoxes, setAllBoxes] = useState<BoxDTO[]>([]);
   const [showGoldenRankingModal, setShowGoldenRankingModal] = useState(false);
+  const [showWaitingListModal, setShowWaitingListModal] = useState(false);
   const [showChatModal, setShowChatModal] = useState(false);
   const [selectedPlayerForChat, setSelectedPlayerForChat] = useState<{ id: string; name: string } | null>(null);
   const [competitions, setCompetitions] = useState<CompetitionDTO[]>([]);
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(null);
   const [seasonsByCompetition, setSeasonsByCompetition] = useState<Map<string, SeasonDTO[]>>(new Map());
   const { user } = useAuth();
+
+  // Sauvegarder la compétition sélectionnée
+  const saveSelectedCompetition = useCallback(async (competitionId: string) => {
+    try {
+      await AsyncStorage.setItem(SELECTED_COMPETITION_KEY, competitionId);
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde de la compétition:', error);
+    }
+  }, []);
 
   // Charger les compétitions et grouper les saisons
   const loadCompetitionsAndSeasons = useCallback(async () => {
@@ -96,14 +110,21 @@ export default function BoxScreen() {
 
       setSeasonsByCompetition(seasonsMap);
 
-      // Sélectionner la première compétition par défaut
-      if (activeCompetitions.length > 0 && !selectedCompetitionId) {
+      // Charger la compétition sauvegardée
+      const savedCompetitionId = await AsyncStorage.getItem(SELECTED_COMPETITION_KEY);
+      
+      // Vérifier si la compétition sauvegardée existe toujours dans les compétitions actives
+      if (savedCompetitionId && activeCompetitions.some(c => c.id === savedCompetitionId)) {
+        setSelectedCompetitionId(savedCompetitionId);
+      } else if (activeCompetitions.length > 0) {
+        // Sinon, sélectionner la première compétition par défaut
         setSelectedCompetitionId(activeCompetitions[0].id);
+        await saveSelectedCompetition(activeCompetitions[0].id);
       }
     } catch (err) {
       console.error('Erreur lors du chargement des compétitions:', err);
     }
-  }, [selectedCompetitionId]);
+  }, [saveSelectedCompetition]);
 
   // Charger les données depuis l'API
   const loadBoxesData = useCallback(async (competitionId: string | null) => {
@@ -119,7 +140,7 @@ export default function BoxScreen() {
       const competitionSeasons = seasonsByCompetition.get(competitionId) || [];
       
       if (competitionSeasons.length === 0) {
-        setError('Aucune saison active pour cette compétition');
+        setError('Cette compétition n\'a pas encore de saison active');
         setIsLoading(false);
         return;
       }
@@ -169,6 +190,7 @@ export default function BoxScreen() {
             firstName: p.first_name,
             lastName: p.last_name,
             pictureUrl: p.picture,
+            nextBoxStatus: p.current_box?.next_box_status || null,
           }));
 
         // Créer un mapping des matchs par paire de joueurs (index dans boxPlayers)
@@ -263,9 +285,16 @@ export default function BoxScreen() {
     }
   }, []);
 
-  // Charger les matchs en live au démarrage
+  // Charger les matchs en live au démarrage et toutes les 5 secondes
   useEffect(() => {
     loadLiveMatches();
+    
+    // Refresh automatique toutes les 5 secondes
+    const interval = setInterval(() => {
+      loadLiveMatches();
+    }, 5000);
+    
+    return () => clearInterval(interval);
   }, [loadLiveMatches]);
 
   // Charger les favoris au démarrage
@@ -408,24 +437,30 @@ export default function BoxScreen() {
   return (
     <ThemedView style={styles.container}>
       <AppBar
-        rightAction={{
-          icon: 'trophy.fill',
-          label: '',
-          onPress: () => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setShowGoldenRankingModal(true);
+        menuItems={[
+          {
+            label: 'Golden Ranking',
+            icon: 'trophy.fill',
+            onPress: () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowGoldenRankingModal(true);
+            },
           },
-        }}
+          {
+            label: 'File d\'attente',
+            icon: 'clock.fill',
+            onPress: () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowWaitingListModal(true);
+            },
+          },
+        ]}
       />
       
       {/* Onglets de compétitions */}
       {competitions.length > 1 && (
         <View style={[styles.competitionsTabs, { backgroundColor: colors.background, borderBottomColor: colors.text + '15' }]}>
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.competitionsTabsContent}
-          >
+          <View style={styles.competitionsTabsContent}>
             {competitions.map((competition) => {
               const isSelected = selectedCompetitionId === competition.id;
               return (
@@ -433,23 +468,25 @@ export default function BoxScreen() {
                   key={competition.id}
                   style={[
                     styles.competitionTab,
-                    isSelected && [styles.competitionTabActive, { backgroundColor: colors.text + '15' }],
-                    !isSelected && { backgroundColor: 'transparent' },
+                    isSelected && [styles.competitionTabActive, { backgroundColor: PRIMARY_COLOR + '20', borderColor: PRIMARY_COLOR, borderWidth: 1.5 }],
+                    !isSelected && { backgroundColor: colors.text + '08' },
                   ]}
-                  onPress={() => {
+                  onPress={async () => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     // Vider les données immédiatement avant de changer d'onglet
                     setBoxesData([]);
                     setIsLoading(true);
                     setSelectedCompetitionId(competition.id);
+                    // Sauvegarder le choix
+                    await saveSelectedCompetition(competition.id);
                   }}
                   activeOpacity={0.7}
                 >
                   <ThemedText
                     style={[
                       styles.competitionTabText,
-                      { color: isSelected ? colors.text : colors.text + '60' },
-                      isSelected && { fontWeight: '600' },
+                      { color: isSelected ? PRIMARY_COLOR : colors.text + '60' },
+                      isSelected && { fontWeight: '700' },
                       !isSelected && { fontWeight: '500' },
                     ]}
                   >
@@ -458,7 +495,7 @@ export default function BoxScreen() {
                 </TouchableOpacity>
               );
             })}
-          </ScrollView>
+          </View>
         </View>
       )}
       
@@ -488,24 +525,6 @@ export default function BoxScreen() {
           },
         ]}
       >
-        {/* Message d'erreur */}
-        {error && !isLoading && (
-          <View style={styles.errorContainer}>
-            <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.text + '60'} />
-            <ThemedText style={[styles.errorText, { color: colors.text }]}>Erreur lors du chargement</ThemedText>
-            <ThemedText style={[styles.errorSubtext, { color: colors.text + '60' }]}>
-              {error}
-            </ThemedText>
-            <TouchableOpacity
-              style={[styles.retryButton, { backgroundColor: PRIMARY_COLOR }]}
-              onPress={() => selectedCompetitionId && loadBoxesData(selectedCompetitionId)}
-              activeOpacity={0.7}
-            >
-              <ThemedText style={styles.retryButtonText}>Réessayer</ThemedText>
-            </TouchableOpacity>
-          </View>
-        )}
-
         {/* Message de chargement */}
         {isLoading && !error && (
           <View style={styles.loadingContainer}>
@@ -538,20 +557,35 @@ export default function BoxScreen() {
                     setShowPlayerModal(true);
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   }}
+                  onRefereePress={(matchId) => {
+                    router.push({
+                      pathname: '/referee',
+                      params: { matchId },
+                    });
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
                 />
               );
             })}
           </View>
         )}
 
-        {/* Message si aucun box */}
-        {boxesData.length === 0 && !isLoading && (
-          <View style={styles.emptyContainer}>
+        {/* Message d'erreur ou aucun box - message unifié */}
+        {(error || (boxesData.length === 0 && !isLoading)) && (
+          <View style={styles.errorContainer}>
             <IconSymbol name="tray.fill" size={48} color={colors.text + '60'} />
-            <ThemedText style={[styles.emptyText, { color: colors.text }]}>Aucun box disponible</ThemedText>
-            <ThemedText style={[styles.emptySubtext, { color: colors.text + '60' }]}>
-              Cette compétition n'a pas encore de boxes
+            <ThemedText style={[styles.errorText, { color: colors.text }]}>
+              {error || 'Aucun box disponible'}
             </ThemedText>
+            {error && (
+              <TouchableOpacity
+                style={[styles.retryButton, { backgroundColor: PRIMARY_COLOR }]}
+                onPress={() => selectedCompetitionId && loadBoxesData(selectedCompetitionId)}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={styles.retryButtonText}>Réessayer</ThemedText>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -580,9 +614,7 @@ export default function BoxScreen() {
               ]}
             >
               <View style={styles.boxTitleLeft}>
-                <View style={[styles.boxIconContainer, { backgroundColor: PRIMARY_COLOR + '20' }]}>
-                  <IconSymbol name="square.grid.2x2.fill" size={20} color={PRIMARY_COLOR} />
-                </View>
+                <IconSymbol name="square.grid.2x2.fill" size={14} color={colors.text + '50'} />
                 <ThemedText type="subtitle" style={[styles.boxTitle, { color: colors.text }]}>
                   {box.name}
                 </ThemedText>
@@ -645,6 +677,12 @@ export default function BoxScreen() {
       <GoldenRankingModal
         visible={showGoldenRankingModal}
         onClose={() => setShowGoldenRankingModal(false)}
+      />
+      
+      {/* Modal File d'attente */}
+      <WaitingListModal
+        visible={showWaitingListModal}
+        onClose={() => setShowWaitingListModal(false)}
       />
       
       {/* Modal Chat Joueur */}
@@ -748,8 +786,8 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   boxTitleContainer: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -761,7 +799,7 @@ const styles = StyleSheet.create({
   boxTitleLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     flex: 1,
   },
   boxIconContainer: {
@@ -772,9 +810,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   boxTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.1,
     flex: 1,
   },
   starButton: {
@@ -827,14 +865,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   competitionsTabsContent: {
+    flexDirection: 'row',
     gap: 4,
-    alignItems: 'center',
+    width: '100%',
   },
   competitionTab: {
+    flex: 1,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 8,
-    marginRight: 4,
     justifyContent: 'center',
     alignItems: 'center',
   },
