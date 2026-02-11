@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, RefreshControl, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Achievements } from '@/components/achievements';
 import { AppBar } from '@/components/app-bar';
 import { AuthModal } from '@/components/auth-modal';
 import { PlayerAvatar } from '@/components/player-avatar';
@@ -96,7 +95,6 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
   const [isFollowingLoading, setIsFollowingLoading] = useState(false);
   const [followingPlayers, setFollowingPlayers] = useState<PlayerDTO[]>([]);
   const [followersPlayers, setFollowersPlayers] = useState<PlayerDTO[]>([]);
-  const [followersFollowStatus, setFollowersFollowStatus] = useState<Map<string, boolean>>(new Map());
   const [showFollowingModal, setShowFollowingModal] = useState(false);
   const [followingModalType, setFollowingModalType] = useState<'following' | 'followers'>('following');
   const [stats, setStats] = useState({ wins: 0, losses: 0, winRate: 0 });
@@ -165,6 +163,9 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
     schedulePreference: 'peu_importe' as 'tot' | 'tard' | 'peu_importe',
   });
   const { image: newProfileImage, pickImage, clearImage } = useImagePicker();
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportReason, setReportReason] = useState<string | null>(null);
+  const [reportSubmitting, setReportSubmitting] = useState(false);
 
   const handleToggleFollow = async () => {
     if (!user || !currentPlayer || currentPlayer.id === user.id) return;
@@ -222,60 +223,6 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error: any) {
       console.error('Erreur unfollow:', error);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', error.message || 'Impossible de retirer le suivi');
-    }
-  };
-
-  const handleFollowBack = async (playerToFollow: PlayerDTO) => {
-    if (!user || !currentPlayer) return;
-    
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    try {
-      await api.followPlayer(playerToFollow.id, currentPlayer.id);
-      
-      // Mettre à jour le statut de suivi
-      setFollowersFollowStatus(prev => {
-        const newMap = new Map(prev);
-        newMap.set(playerToFollow.id, true);
-        return newMap;
-      });
-      
-      // Mettre à jour la liste des joueurs suivis
-      const following = await api.getFollowing(currentPlayer.id);
-      setFollowingPlayers(following);
-      
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error: any) {
-      console.error('Erreur follow back:', error);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Erreur', error.message || 'Impossible de suivre ce joueur');
-    }
-  };
-
-  const handleUnfollowBack = async (playerToUnfollow: PlayerDTO) => {
-    if (!user || !currentPlayer) return;
-    
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    try {
-      await api.unfollowPlayer(playerToUnfollow.id, currentPlayer.id);
-      
-      // Mettre à jour le statut de suivi
-      setFollowersFollowStatus(prev => {
-        const newMap = new Map(prev);
-        newMap.set(playerToUnfollow.id, false);
-        return newMap;
-      });
-      
-      // Mettre à jour la liste des joueurs suivis
-      const following = await api.getFollowing(currentPlayer.id);
-      setFollowingPlayers(following);
-      
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error: any) {
-      console.error('Erreur unfollow back:', error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Erreur', error.message || 'Impossible de retirer le suivi');
     }
@@ -347,19 +294,6 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
           try {
             const followers = await api.getFollowers(player.id);
             setFollowersPlayers(followers);
-            
-            // Charger le statut de suivi pour chaque follower
-            const followStatusMap = new Map<string, boolean>();
-            for (const follower of followers) {
-              try {
-                const status = await api.getFollowStatus(player.id, follower.id);
-                followStatusMap.set(follower.id, status.isFollowing);
-              } catch (error) {
-                console.error('Erreur chargement statut suivi:', error);
-                followStatusMap.set(follower.id, false);
-              }
-            }
-            setFollowersFollowStatus(followStatusMap);
           } catch (error) {
             console.error('Erreur chargement followers:', error);
             setFollowersPlayers([]);
@@ -573,12 +507,23 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
         }
       });
       
-      // 3. Total de points (Golden Ranking) - calculer depuis TOUS les matchs de l'historique
+      // 3. Total de points (Golden Ranking) - calculer depuis toutes les saisons
       let totalPoints = 0;
+      const allSeasons = await api.getSeasonsCached();
+      const currentYear = new Date().getFullYear();
       
-      // Parcourir tous les matchs du joueur (déjà filtrés par player_id)
-      matches.forEach((match) => {
-        // Seulement les matchs terminés avec score valide
+      for (const season of allSeasons) {
+        const seasonYear = new Date(season.start_date).getFullYear();
+        if (seasonYear === currentYear) {
+          const seasonMatches = matches.filter((m) => {
+            // Vérifier si le match appartient à cette saison (par date)
+            const matchDate = m.played_at ? new Date(m.played_at) : new Date(m.scheduled_at || 0);
+            const seasonStart = new Date(season.start_date);
+            const seasonEnd = new Date(season.end_date);
+            return matchDate >= seasonStart && matchDate <= seasonEnd;
+          });
+          
+          seasonMatches.forEach((match) => {
             if (match.score_a !== null && match.score_b !== null && 
                 !(match.score_a === 0 && match.score_b === 0) &&
                 !match.no_show_player_id && !match.retired_player_id && !match.delayed_player_id) {
@@ -593,13 +538,13 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               }
             }
           });
+        }
+      }
       
       // 4. Position dans le classement (calculer depuis le ranking)
       let rankingPosition = 0;
       try {
         const allPlayers = await api.getPlayersCached();
-        const allSeasons = await api.getSeasonsCached();
-        const currentYear = new Date().getFullYear();
         // Calculer les points de tous les joueurs pour l'année en cours
         const playerRankings = await Promise.all(
           allPlayers.map(async (p) => {
@@ -1225,91 +1170,82 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
         >
           {/* Header avec profil */}
           <View style={[styles.profileHeader, isModal && styles.profileHeaderModal]}>
-          {isModal && onClose && (
+          {user && currentPlayer && user.id === currentPlayer.id && (
             <TouchableOpacity
-              style={[styles.modalCloseButton, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}
-              onPress={onClose}
+              style={[styles.editIconButton, styles.editIconButtonLeft, { backgroundColor: colors.text + '08' }]}
+              onPress={handleEditProfile}
               activeOpacity={0.7}
             >
-              <IconSymbol name="xmark" size={18} color={colors.text} />
+              <IconSymbol name="pencil.circle.fill" size={28} color={colors.text} />
             </TouchableOpacity>
           )}
-          
-          <View style={styles.profileHeaderContent}>
-            <View style={[styles.profileInfoSection, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}>
-              {isModal && user && currentPlayer && currentPlayer.email && user.email && currentPlayer.email.toLowerCase() !== user.email.toLowerCase() && (
-                <View style={styles.actionButtonsRow}>
-                  {onStartChat && (
+          {isModal && (
+            <View style={[styles.modalHeaderButtons, { backgroundColor: colors.background }]}>
+              {user && currentPlayer && user.id !== currentPlayer.id && onStartChat && (
                 <TouchableOpacity
-                      style={[styles.actionButton, { backgroundColor: PRIMARY_COLOR + '15' }]}
+                  style={[styles.chatIconButton, { backgroundColor: PRIMARY_COLOR + '15' }]}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     onStartChat(currentPlayer.id, `${currentPlayer.first_name} ${currentPlayer.last_name}`);
                   }}
                   activeOpacity={0.7}
                 >
-                      <IconSymbol name="bubble.left.and.bubble.right.fill" size={18} color={PRIMARY_COLOR} />
+                  <IconSymbol name="bubble.left.and.bubble.right.fill" size={24} color={PRIMARY_COLOR} />
                 </TouchableOpacity>
               )}
-                  {currentPlayer.id && user.id && currentPlayer.id !== user.id && (
+              {/* Bouton de signalement - seulement si ce n'est pas le profil de l'utilisateur connecté */}
+              {currentPlayer && user && currentPlayer.id !== user.id && (
                 <TouchableOpacity
-                      style={[
-                        styles.actionButton,
-                        {
-                          backgroundColor: isFollowing ? colors.text + '10' : PRIMARY_COLOR + '15',
-                        },
-                      ]}
-                      onPress={handleToggleFollow}
-                      disabled={isFollowingLoading}
+                  style={[styles.chatIconButton, { backgroundColor: colors.text + '08' }]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setShowReportModal(true);
+                  }}
                   activeOpacity={0.7}
                 >
-                      <IconSymbol 
-                        name={isFollowing ? "person.badge.minus.fill" : "person.badge.plus.fill"} 
-                        size={18} 
-                        color={isFollowing ? colors.text : PRIMARY_COLOR} 
-                      />
+                  <IconSymbol name="flag.fill" size={20} color={colors.text + '80'} />
+                </TouchableOpacity>
+              )}
+              {onClose && (
+                <TouchableOpacity
+                  style={[styles.chatIconButton, { backgroundColor: colors.text + '08' }]}
+                  onPress={onClose}
+                  activeOpacity={0.7}
+                >
+                  <IconSymbol name="xmark" size={24} color={colors.text} />
                 </TouchableOpacity>
               )}
             </View>
           )}
+          
           <PlayerAvatar
             firstName={currentPlayer?.first_name || user?.name.split(' ')[0] || 'User'}
             lastName={currentPlayer?.last_name || user?.name.split(' ')[1] || ''}
             pictureUrl={currentPlayer?.picture}
-                size={isModal ? 60 : 70}
+            size={isModal ? 70 : 80}
             backgroundColor={AVATAR_COLOR}
           />
           {currentPlayer && (
-                <View style={styles.profileInfoText}>
-                  <View style={styles.profileNameRow}>
+            <>
+
+
+
+
               <ThemedText style={[styles.profileName, isModal && styles.profileNameModal]}>
                 {currentPlayer.first_name} {currentPlayer.last_name}
               </ThemedText>
-                    {user && currentPlayer.email && user.email && currentPlayer.email.toLowerCase() === user.email.toLowerCase() && (
-                      <TouchableOpacity
-                        style={[styles.editButtonInline, { backgroundColor: colors.text + '08' }]}
-                        onPress={handleEditProfile}
-                        activeOpacity={0.7}
-                      >
-                        <IconSymbol name="gearshape.fill" size={14} color={colors.text} />
-                      </TouchableOpacity>
-                    )}
-                  </View>
               {currentPlayer.phone && (
                 <ThemedText style={[styles.profilePhone, { color: colors.text, opacity: 0.6 }]}>
                   {currentPlayer.phone}
                 </ThemedText>
               )}
               
-                  {/* Badges dans la même carte */}
-                  {(currentPlayer.current_box || advancedStats.rankingPosition > 0) && (
-                    <View style={styles.badgesRow}>
+              {/* Badges et bouton Follow sur une seule ligne */}
+              <View style={[styles.badgesContainer, isModal && styles.badgesContainerModal]}>
                 {currentPlayer.current_box && (
-                        <View style={styles.badgeItem}>
-                          <View style={[styles.badgeIconContainer, { backgroundColor: PRIMARY_COLOR + '15' }]}>
+                  <View style={[styles.infoBadge, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR + '40' }]}>
                     <IconSymbol name="square.grid.2x2.fill" size={12} color={PRIMARY_COLOR} />
-                          </View>
-                          <ThemedText style={[styles.badgeValue, { color: colors.text }]}>
+                    <ThemedText style={[styles.infoBadgeText, { color: PRIMARY_COLOR }]}>
                       {currentPlayer.current_box.box_name}
                     </ThemedText>
                   </View>
@@ -1317,32 +1253,50 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 
                 {advancedStats.rankingPosition > 0 && (
                   <TouchableOpacity
-                          style={styles.badgeItem}
+                    style={[styles.infoBadge, { backgroundColor: PRIMARY_COLOR + '15', borderColor: PRIMARY_COLOR + '40' }]}
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       router.push('/(tabs)/ranking');
                     }}
                     activeOpacity={0.7}
                   >
-                          <View style={[styles.badgeIconContainer, { backgroundColor: PRIMARY_COLOR + '15' }]}>
                     <IconSymbol name="trophy.fill" size={12} color={PRIMARY_COLOR} />
-                          </View>
-                          <ThemedText style={[styles.badgeValue, { color: colors.text }]}>
+                    <ThemedText style={[styles.infoBadgeText, { color: PRIMARY_COLOR }]}>
                       #{advancedStats.rankingPosition}
                     </ThemedText>
                   </TouchableOpacity>
                 )}
-                    </View>
+                
+                {/* Bouton Follow/Unfollow (seulement en modal et si ce n'est pas le joueur actuel) */}
+                {isModal && user && currentPlayer && currentPlayer.id && user.id && currentPlayer.id !== user.id && (
+                  <TouchableOpacity
+                    style={[
+                      styles.followButton,
+                      {
+                        backgroundColor: isFollowing ? colors.text + '10' : PRIMARY_COLOR,
+                        borderColor: isFollowing ? colors.text + '25' : PRIMARY_COLOR,
+                      },
+                    ]}
+                    onPress={handleToggleFollow}
+                    disabled={isFollowingLoading}
+                    activeOpacity={0.7}
+                  >
+                    <IconSymbol 
+                      name={isFollowing ? "person.badge.minus.fill" : "person.badge.plus.fill"} 
+                      size={13} 
+                      color={isFollowing ? colors.text : '#000'} 
+                    />
+                    <ThemedText style={[
+                      styles.followButtonText,
+                      { color: isFollowing ? colors.text : '#000' }
+                    ]}>
+                      {isFollowing ? 'Ne plus suivre' : 'Suivre'}
+                    </ThemedText>
+                  </TouchableOpacity>
                 )}
               </View>
-              )}
-            </View>
-            
-            {currentPlayer && (
-              <>
             </>
           )}
-          </View>
         </View>
 
         {/* Modal d'édition du profil */}
@@ -1372,6 +1326,10 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               <IconSymbol name="square.grid.2x2.fill" size={18} color={colors.text + '80'} />
               <ThemedText style={styles.sectionTitle}>Prochain Box</ThemedText>
             </View>
+            <ThemedText style={[styles.sectionSubtitle, { color: colors.text, opacity: 0.6 }]}>
+              Souhaitez-vous continuer dans le prochain box ?
+            </ThemedText>
+            
             <View style={styles.statusButtons}>
                 <TouchableOpacity
                   style={[
@@ -1389,7 +1347,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 >
                   <IconSymbol 
                     name="checkmark.circle.fill" 
-                    size={18} 
+                    size={24} 
                     color={currentPlayer.current_box.next_box_status === 'continue' ? '#10b981' : colors.text + '60'} 
                   />
                   <ThemedText 
@@ -1418,7 +1376,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 >
                   <IconSymbol 
                     name="xmark.circle.fill" 
-                    size={18} 
+                    size={24} 
                     color={currentPlayer.current_box.next_box_status === 'stop' ? '#ef4444' : colors.text + '60'} 
                   />
                   <ThemedText 
@@ -1447,7 +1405,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 >
                   <IconSymbol 
                     name="questionmark.circle.fill" 
-                    size={18} 
+                    size={24} 
                     color={!currentPlayer.current_box.next_box_status ? colors.text : colors.text + '60'} 
                   />
                   <ThemedText 
@@ -1571,7 +1529,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 activeOpacity={0.7}
               >
                 <View style={[styles.streakIconContainer, { backgroundColor: '#10b981' + '20' }]}>
-                  <IconSymbol name="flame.fill" size={20} color="#10b981" />
+                  <IconSymbol name="flame.fill" size={24} color="#10b981" />
                 </View>
                 <ThemedText style={[styles.streakValue, { color: '#10b981' }]}>
                   {advancedStats.bestStreak.count}
@@ -1596,7 +1554,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 activeOpacity={0.7}
               >
                 <View style={[styles.streakIconContainer, { backgroundColor: '#ef4444' + '20' }]}>
-                  <IconSymbol name="exclamationmark.triangle.fill" size={20} color="#ef4444" />
+                  <IconSymbol name="exclamationmark.triangle.fill" size={24} color="#ef4444" />
                 </View>
                 <ThemedText style={[styles.streakValue, { color: '#ef4444' }]}>
                   {advancedStats.worstStreak.count}
@@ -1608,6 +1566,17 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
             )}
           </View>
           
+          {advancedStats.totalPoints > 0 && (
+            <View style={[styles.advancedStatBox, { backgroundColor: colors.text + '05', marginTop: 12 }]}>
+              <IconSymbol name="trophy.fill" size={20} color={PRIMARY_COLOR} />
+              <ThemedText style={[styles.advancedStatValue, { color: colors.text }]}>
+                {advancedStats.totalPoints}
+              </ThemedText>
+              <ThemedText style={[styles.advancedStatLabel, { color: colors.text, opacity: 0.6 }]}>
+                Points (année)
+              </ThemedText>
+            </View>
+          )}
         </View>
 
         {/* Adversaires */}
@@ -1618,11 +1587,11 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               <ThemedText style={styles.sectionTitle}>Adversaires</ThemedText>
             </View>
             
-            {/* Adversaires - style amélioré */}
-            <View style={styles.opponentsContainer}>
+            {/* Adversaires - tous côte à côte */}
+            <View style={styles.opponentsRow}>
               {advancedStats.rival.name && advancedStats.rival.player && (
                 <TouchableOpacity
-                  style={[styles.opponentCard, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: PRIMARY_COLOR + '30', flex: 1 }]}
                   onPress={async () => {
                     const players = await api.getPlayersCached();
                     openMatchDetailsModal(
@@ -1633,37 +1602,55 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.opponentCardHeader}>
+                  <View style={styles.opponentEmojiContainer}>
+                    <ThemedText style={styles.opponentEmoji}>🤝</ThemedText>
+                  </View>
+                  <ThemedText 
+                    style={[styles.opponentTitle, { color: colors.text }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    Meilleur ami
+                  </ThemedText>
+                  <View style={styles.opponentAvatarContainer}>
                     <PlayerAvatar
                       firstName={advancedStats.rival.player.first_name}
                       lastName={advancedStats.rival.player.last_name}
                       pictureUrl={advancedStats.rival.player.picture}
-                      size={48}
+                      size={36}
                       backgroundColor={AVATAR_COLOR}
                     />
-                    <View style={styles.opponentCardHeaderText}>
-                      <ThemedText style={[styles.opponentCardTitle, { color: colors.text }]}>
-                        Rival
+                  </View>
+                  <View style={styles.opponentNamesContainer}>
+                    <ThemedText 
+                      style={[styles.opponentFirstName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.rival.player.first_name}
                     </ThemedText>
-                      <ThemedText style={[styles.opponentCardName, { color: colors.text }]}>
-                        {advancedStats.rival.player.first_name} {advancedStats.rival.player.last_name}
+                    <ThemedText 
+                      style={[styles.opponentLastName, { color: colors.text, opacity: 0.7 }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.rival.player.last_name}
                     </ThemedText>
-                      <View style={styles.opponentCardStatsRow}>
-                        <ThemedText style={[styles.opponentCardSubtitle, { color: colors.text, opacity: 0.6 }]}>
+                  </View>
+                  <View style={styles.opponentStatsContainer}>
+                    <ThemedText style={[styles.opponentStatsLabel, { color: colors.text, opacity: 0.5 }]}>
                       {advancedStats.rival.matches} matchs
                     </ThemedText>
-                        <View style={styles.opponentCardStats}>
-                          <View style={[styles.opponentCardStatBadge, { backgroundColor: '#10b981' + '15' }]}>
-                            <ThemedText style={[styles.opponentCardStatValue, { color: '#10b981' }]}>
+                    <View style={styles.opponentStatsRow}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#10b981' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#10b981' }]}>
                           {advancedStats.rival.wins}V
                         </ThemedText>
                       </View>
-                          <View style={[styles.opponentCardStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
-                            <ThemedText style={[styles.opponentCardStatValue, { color: '#ef4444' }]}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#ef4444' }]}>
                           {advancedStats.rival.losses}D
                         </ThemedText>
-                          </View>
-                        </View>
                       </View>
                     </View>
                   </View>
@@ -1671,7 +1658,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               )}
               {advancedStats.bestOpponent.name && advancedStats.bestOpponent.player && (
                 <TouchableOpacity
-                  style={[styles.opponentCard, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: '#10b981' + '30', flex: 1 }]}
                   onPress={async () => {
                     const players = await api.getPlayersCached();
                     openMatchDetailsModal(
@@ -1682,37 +1669,55 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.opponentCardHeader}>
+                  <View style={styles.opponentEmojiContainer}>
+                    <ThemedText style={styles.opponentEmoji}>⭐</ThemedText>
+                  </View>
+                  <ThemedText 
+                    style={[styles.opponentTitle, { color: colors.text }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    Victoires faciles
+                  </ThemedText>
+                  <View style={styles.opponentAvatarContainer}>
                     <PlayerAvatar
                       firstName={advancedStats.bestOpponent.player.first_name}
                       lastName={advancedStats.bestOpponent.player.last_name}
                       pictureUrl={advancedStats.bestOpponent.player.picture}
-                      size={48}
+                      size={36}
                       backgroundColor={AVATAR_COLOR}
                     />
-                    <View style={styles.opponentCardHeaderText}>
-                      <ThemedText style={[styles.opponentCardTitle, { color: colors.text }]}>
-                        Meilleur adversaire
+                  </View>
+                  <View style={styles.opponentNamesContainer}>
+                    <ThemedText 
+                      style={[styles.opponentFirstName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.bestOpponent.player.first_name}
                     </ThemedText>
-                      <ThemedText style={[styles.opponentCardName, { color: colors.text }]}>
-                        {advancedStats.bestOpponent.player.first_name} {advancedStats.bestOpponent.player.last_name}
+                    <ThemedText 
+                      style={[styles.opponentLastName, { color: colors.text, opacity: 0.7 }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.bestOpponent.player.last_name}
                     </ThemedText>
-                      <View style={styles.opponentCardStatsRow}>
-                        <ThemedText style={[styles.opponentCardSubtitle, { color: colors.text, opacity: 0.6 }]}>
-                          {advancedStats.bestOpponent.matches} matchs • {advancedStats.bestOpponent.winRate}% victoires
+                  </View>
+                  <View style={styles.opponentStatsContainer}>
+                    <ThemedText style={[styles.opponentStatsLabel, { color: colors.text, opacity: 0.5 }]}>
+                      {advancedStats.bestOpponent.matches} matchs
                     </ThemedText>
-                        <View style={styles.opponentCardStats}>
-                          <View style={[styles.opponentCardStatBadge, { backgroundColor: '#10b981' + '15' }]}>
-                            <ThemedText style={[styles.opponentCardStatValue, { color: '#10b981' }]}>
+                    <View style={styles.opponentStatsRow}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#10b981' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#10b981' }]}>
                           {advancedStats.bestOpponent.wins}V
                         </ThemedText>
                       </View>
-                          <View style={[styles.opponentCardStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
-                            <ThemedText style={[styles.opponentCardStatValue, { color: '#ef4444' }]}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#ef4444' }]}>
                           {advancedStats.bestOpponent.losses}D
                         </ThemedText>
-                          </View>
-                        </View>
                       </View>
                     </View>
                   </View>
@@ -1721,7 +1726,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               
               {advancedStats.worstOpponent.name && advancedStats.worstOpponent.name !== advancedStats.bestOpponent.name && advancedStats.worstOpponent.player && (
                 <TouchableOpacity
-                  style={[styles.opponentCard, { backgroundColor: colors.text + '05', borderColor: colors.text + '15' }]}
+                  style={[styles.opponentBox, { backgroundColor: colors.text + '05', borderColor: '#ef4444' + '30', flex: 1 }]}
                   onPress={async () => {
                     const players = await api.getPlayersCached();
                     openMatchDetailsModal(
@@ -1732,37 +1737,55 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.opponentCardHeader}>
+                  <View style={styles.opponentEmojiContainer}>
+                    <ThemedText style={styles.opponentEmoji}>😈</ThemedText>
+                  </View>
+                  <ThemedText 
+                    style={[styles.opponentTitle, { color: colors.text }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    Bête noire
+                  </ThemedText>
+                  <View style={styles.opponentAvatarContainer}>
                     <PlayerAvatar
                       firstName={advancedStats.worstOpponent.player.first_name}
                       lastName={advancedStats.worstOpponent.player.last_name}
                       pictureUrl={advancedStats.worstOpponent.player.picture}
-                      size={48}
+                      size={36}
                       backgroundColor={AVATAR_COLOR}
                     />
-                    <View style={styles.opponentCardHeaderText}>
-                      <ThemedText style={[styles.opponentCardTitle, { color: colors.text }]}>
-                        Bête noire
+                  </View>
+                  <View style={styles.opponentNamesContainer}>
+                    <ThemedText 
+                      style={[styles.opponentFirstName, { color: colors.text }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.worstOpponent.player.first_name}
                     </ThemedText>
-                      <ThemedText style={[styles.opponentCardName, { color: colors.text }]}>
-                        {advancedStats.worstOpponent.player.first_name} {advancedStats.worstOpponent.player.last_name}
+                    <ThemedText 
+                      style={[styles.opponentLastName, { color: colors.text, opacity: 0.7 }]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {advancedStats.worstOpponent.player.last_name}
                     </ThemedText>
-                      <View style={styles.opponentCardStatsRow}>
-                        <ThemedText style={[styles.opponentCardSubtitle, { color: colors.text, opacity: 0.6 }]}>
-                          {advancedStats.worstOpponent.matches} matchs • {advancedStats.worstOpponent.winRate}% victoires
+                  </View>
+                  <View style={styles.opponentStatsContainer}>
+                    <ThemedText style={[styles.opponentStatsLabel, { color: colors.text, opacity: 0.5 }]}>
+                      {advancedStats.worstOpponent.matches} matchs
                     </ThemedText>
-                        <View style={styles.opponentCardStats}>
-                          <View style={[styles.opponentCardStatBadge, { backgroundColor: '#10b981' + '15' }]}>
-                            <ThemedText style={[styles.opponentCardStatValue, { color: '#10b981' }]}>
+                    <View style={styles.opponentStatsRow}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#10b981' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#10b981' }]}>
                           {advancedStats.worstOpponent.wins}V
                         </ThemedText>
                       </View>
-                          <View style={[styles.opponentCardStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
-                            <ThemedText style={[styles.opponentCardStatValue, { color: '#ef4444' }]}>
+                      <View style={[styles.opponentStatBadge, { backgroundColor: '#ef4444' + '15' }]}>
+                        <ThemedText style={[styles.opponentStatValue, { color: '#ef4444' }]}>
                           {advancedStats.worstOpponent.losses}D
                         </ThemedText>
-                          </View>
-                        </View>
                       </View>
                     </View>
                   </View>
@@ -2386,25 +2409,6 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
           </View>
         )}
 
-        {/* Succès - affiché pour tous les joueurs */}
-        {currentPlayer && (
-          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-            <Achievements
-              stats={{
-                wins: stats.wins,
-                losses: stats.losses,
-                winRate: stats.winRate,
-                totalMatches: stats.wins + stats.losses,
-                bestStreak: advancedStats.bestStreak.count,
-                currentStreak: advancedStats.currentStreak.count,
-                totalPoints: advancedStats.totalPoints,
-                rankingPosition: advancedStats.rankingPosition,
-              }}
-              hasPicture={!!currentPlayer?.picture}
-            />
-          </View>
-        )}
-
         {/* Suivis - uniquement dans le profil de l'utilisateur connecté */}
         {currentPlayer && user && currentPlayer.id === user.id && (
           <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
@@ -2423,7 +2427,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 activeOpacity={0.7}
               >
                 <ThemedText style={[styles.followingSectionButtonText, { color: colors.text }]}>
-                  {followingPlayers.length} suivi(e)s
+                  Suivi ({followingPlayers.length})
                 </ThemedText>
                 <IconSymbol name="chevron.right" size={14} color={colors.text + '60'} />
               </TouchableOpacity>
@@ -2438,7 +2442,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 activeOpacity={0.7}
               >
                 <ThemedText style={[styles.followingSectionButtonText, { color: colors.text }]}>
-                  {followersPlayers.length} followers
+                  Suivi par ({followersPlayers.length})
                 </ThemedText>
                 <IconSymbol name="chevron.right" size={14} color={colors.text + '60'} />
               </TouchableOpacity>
@@ -2485,7 +2489,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 color={colors.text + '80'} 
               />
               <ThemedText style={[styles.modalTitle, { color: colors.text }]}>
-                {followingModalType === 'following' ? 'Suivi(e)s' : 'Followers'}
+                {followingModalType === 'following' ? 'Joueurs suivis' : 'Suivi par'}
               </ThemedText>
             </View>
             <TouchableOpacity
@@ -2503,7 +2507,7 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                 followingPlayers.length > 0 ? (
                   <View style={styles.followingList}>
                     {followingPlayers.map((player) => (
-                      <View key={player.id} style={[styles.followingItem, { borderBottomColor: colors.text + '15' }]}>
+                      <View key={player.id} style={[styles.followingItem, { borderBottomColor: colors.text + '30', borderBottomWidth: 1 }]}>
                         <TouchableOpacity
                           style={styles.followingPlayerInfo}
                           onPress={() => {
@@ -2519,25 +2523,26 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                             firstName={player.first_name}
                             lastName={player.last_name}
                             pictureUrl={player.picture}
-                            size={44}
+                            size={40}
                           />
                           <View style={styles.followingPlayerName}>
                             <ThemedText style={[styles.followingPlayerFirstName, { color: colors.text }]}>
-                              {player.first_name} {player.last_name}
+                              {player.first_name}
+                            </ThemedText>
+                            <ThemedText style={[styles.followingPlayerLastName, { color: colors.text, opacity: 0.7 }]}>
+                              {player.last_name}
                             </ThemedText>
                           </View>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={[styles.unfollowButton, { borderColor: colors.text + '20', backgroundColor: colors.text + '08' }]}
+                          style={[styles.unfollowButton, { borderColor: colors.text + '30' }]}
                           onPress={() => {
                             handleUnfollowPlayer(player);
                             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           }}
                           activeOpacity={0.7}
                         >
-                          <ThemedText style={[styles.unfollowButtonText, { color: colors.text }]}>
-                            Supprimer
-                          </ThemedText>
+                          <IconSymbol name="trash" size={14} color={colors.text + '80'} />
                         </TouchableOpacity>
                       </View>
                     ))}
@@ -2552,15 +2557,10 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               ) : (
                 followersPlayers.length > 0 ? (
                   <View style={styles.followingList}>
-                    {followersPlayers.map((player) => {
-                      const isFollowingBack = followersFollowStatus.get(player.id) || false;
-                      return (
-                        <View
+                    {followersPlayers.map((player) => (
+                      <TouchableOpacity
                         key={player.id}
                         style={[styles.followingItem, { borderBottomColor: colors.text + '15' }]}
-                        >
-                          <TouchableOpacity
-                            style={styles.followingPlayerInfo}
                         onPress={() => {
                           setShowFollowingModal(false);
                           router.push({
@@ -2570,42 +2570,24 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
                         }}
                         activeOpacity={0.7}
                       >
+                        <View style={styles.followingPlayerInfo}>
                           <PlayerAvatar
                             firstName={player.first_name}
                             lastName={player.last_name}
                             pictureUrl={player.picture}
-                              size={44}
+                            size={40}
                           />
                           <View style={styles.followingPlayerName}>
                             <ThemedText style={[styles.followingPlayerFirstName, { color: colors.text }]}>
-                                {player.first_name} {player.last_name}
+                              {player.first_name}
                             </ThemedText>
+                            <ThemedText style={[styles.followingPlayerLastName, { color: colors.text, opacity: 0.7 }]}>
+                              {player.last_name}
+                            </ThemedText>
+                          </View>
                         </View>
                       </TouchableOpacity>
-                          {isFollowingBack ? (
-                            <TouchableOpacity
-                              style={[styles.followBackButton, { backgroundColor: colors.text + '10', borderColor: colors.text + '20' }]}
-                              onPress={() => handleUnfollowBack(player)}
-                              activeOpacity={0.7}
-                            >
-                              <ThemedText style={[styles.followBackButtonText, { color: colors.text }]}>
-                                Suivi(e)
-                              </ThemedText>
-                            </TouchableOpacity>
-                          ) : (
-                            <TouchableOpacity
-                              style={[styles.followBackButton, { backgroundColor: PRIMARY_COLOR, borderColor: PRIMARY_COLOR }]}
-                              onPress={() => handleFollowBack(player)}
-                              activeOpacity={0.7}
-                            >
-                              <ThemedText style={[styles.followBackButtonText, { color: '#000' }]}>
-                                Suivre
-                              </ThemedText>
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      );
-                    })}
+                    ))}
                   </View>
                 ) : (
                   <View style={styles.modalEmpty}>
@@ -2795,6 +2777,143 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* Modal de signalement de photo */}
+      <Modal
+        visible={showReportModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          setShowReportModal(false);
+          setReportReason(null);
+        }}
+      >
+        <TouchableOpacity
+          style={styles.reportModalOverlay}
+          activeOpacity={1}
+          onPress={() => {
+            setShowReportModal(false);
+            setReportReason(null);
+          }}
+        >
+          <TouchableOpacity
+            style={[styles.reportModalContent, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.reportModalHeader}>
+              <ThemedText style={[styles.reportModalTitle, { color: colors.text }]}>
+                Signaler la photo
+              </ThemedText>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowReportModal(false);
+                  setReportReason(null);
+                }}
+                style={styles.reportModalCloseButton}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="xmark" size={20} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ThemedText style={[styles.reportModalDescription, { color: colors.text + '80' }]}>
+              Pourquoi signalez-vous cette photo ?
+            </ThemedText>
+
+            <View style={styles.reportReasonsContainer}>
+              {[
+                { id: 'offensive', label: 'Contenu offensant', icon: 'exclamationmark.triangle.fill' },
+                { id: 'impersonation', label: 'Usurpation d\'identité', icon: 'person.crop.circle.badge.xmark' },
+                { id: 'inappropriate', label: 'Contenu inapproprié', icon: 'hand.raised.fill' },
+                { id: 'other', label: 'Autre', icon: 'ellipsis.circle.fill' },
+              ].map((reason) => (
+                <TouchableOpacity
+                  key={reason.id}
+                  style={[
+                    styles.reportReasonButton,
+                    reportReason === reason.id && [styles.reportReasonButtonActive, { backgroundColor: colors.text + '15' }],
+                    { borderColor: colors.text + '20' },
+                  ]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setReportReason(reason.id);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <IconSymbol
+                    name={reason.icon as any}
+                    size={18}
+                    color={reportReason === reason.id ? PRIMARY_COLOR : colors.text + '60'}
+                  />
+                  <ThemedText
+                    style={[
+                      styles.reportReasonText,
+                      { color: reportReason === reason.id ? colors.text : colors.text + '70' },
+                      reportReason === reason.id && { fontWeight: '600' },
+                    ]}
+                  >
+                    {reason.label}
+                  </ThemedText>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.reportSubmitButton,
+                { backgroundColor: reportReason ? PRIMARY_COLOR : colors.text + '20' },
+                !reportReason && styles.reportSubmitButtonDisabled,
+              ]}
+              onPress={async () => {
+                if (!reportReason || !currentPlayer) return;
+                
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setReportSubmitting(true);
+                
+                try {
+                  // TODO: Implémenter l'endpoint API pour le signalement
+                  // await api.reportPlayerPhoto(currentPlayer.id, reportReason, user.id);
+                  
+                  // Simulation pour l'instant
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  
+                  Alert.alert(
+                    'Signalement envoyé',
+                    'Merci pour votre signalement. Nous examinerons cette photo dans les plus brefs délais.',
+                    [
+                      {
+                        text: 'OK',
+                        onPress: () => {
+                          setShowReportModal(false);
+                          setReportReason(null);
+                        },
+                      },
+                    ]
+                  );
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                } catch (error: any) {
+                  console.error('Erreur signalement:', error);
+                  Alert.alert('Erreur', 'Impossible d\'envoyer le signalement. Veuillez réessayer.');
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+                } finally {
+                  setReportSubmitting(false);
+                }
+              }}
+              disabled={!reportReason || reportSubmitting}
+              activeOpacity={0.7}
+            >
+              {reportSubmitting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <ThemedText style={styles.reportSubmitButtonText}>
+                  Envoyer le signalement
+                </ThemedText>
+              )}
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </>
   );
 
@@ -2845,76 +2964,40 @@ const styles = StyleSheet.create({
   },
   profileHeader: {
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
     marginTop: 4,
     position: 'relative',
   },
   profileHeaderModal: {
     marginTop: 0,
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  profileHeaderContent: {
-    alignItems: 'center',
-    width: '100%',
-    gap: 12,
-  },
-  profileInfoSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    width: '100%',
-    gap: 16,
-    position: 'relative',
-  },
-  profileInfoText: {
-    flex: 1,
-    gap: 4,
-  },
-  badgesRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  profileNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  editButtonInline: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  actionButtonsRow: {
+  editIconButton: {
     position: 'absolute',
-    top: 12,
-    right: 12,
-    flexDirection: 'row',
-    gap: 8,
+    top: 0,
+    borderRadius: 16,
+    padding: 8,
     zIndex: 1,
   },
-  actionButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
+  editIconButtonLeft: {
+    left: 0,
   },
-  modalCloseButton: {
+  editIconButtonRight: {
+    right: 0,
+  },
+  modalHeaderButtons: {
     position: 'absolute',
-    top: -8,
-    right: -8,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
+    top: 0,
+    right: 0,
+    flexDirection: 'row',
+    gap: 8,
     zIndex: 10,
-    borderWidth: 2,
+    padding: 4,
+    borderRadius: 16,
+  },
+  chatIconButton: {
+    padding: 8,
+    borderRadius: 16,
   },
   avatar: {
     width: 80,
@@ -2922,6 +3005,7 @@ const styles = StyleSheet.create({
     borderRadius: 40,
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: 16,
   },
   avatarText: {
     fontSize: 28,
@@ -2930,15 +3014,20 @@ const styles = StyleSheet.create({
     lineHeight: 32,
   },
   profileName: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '700',
+    marginBottom: 2,
+    marginTop: 8,
   },
   profileNameModal: {
     fontSize: 18,
+    marginTop: 4,
+    marginBottom: 2,
   },
   profilePhone: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '400',
+    marginBottom: 8,
   },
   followButton: {
     flexDirection: 'row',
@@ -2951,32 +3040,6 @@ const styles = StyleSheet.create({
   },
   followButtonText: {
     fontSize: 12,
-    fontWeight: '600',
-  },
-  badgesCard: {
-    flexDirection: 'row',
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    gap: 16,
-    width: '100%',
-    maxWidth: 300,
-    justifyContent: 'center',
-  },
-  badgeItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  badgeIconContainer: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeValue: {
-    fontSize: 13,
     fontWeight: '600',
   },
   badgesContainer: {
@@ -3093,15 +3156,14 @@ const styles = StyleSheet.create({
   },
   statusButtons: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
+    gap: 10,
   },
   statusButton: {
     flex: 1,
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingVertical: 16,
     paddingHorizontal: 12,
     borderRadius: 12,
     borderWidth: 2,
@@ -3114,10 +3176,9 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   statusButtonText: {
-    fontSize: 12,
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '400',
     textAlign: 'center',
-    marginTop: 4,
   },
   searchBar: {
     flexDirection: 'row',
@@ -3198,19 +3259,19 @@ const styles = StyleSheet.create({
   statBox: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 20,
     paddingHorizontal: 8,
     borderRadius: 12,
     borderWidth: 1.5,
   },
   statValue: {
-    fontSize: 26,
+    fontSize: 32,
     fontWeight: '700',
-    marginBottom: 4,
-    lineHeight: 30,
+    marginBottom: 6,
+    lineHeight: 36,
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '500',
   },
   matchHistoryList: {
@@ -3467,9 +3528,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderBottomWidth: 0.5,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
   },
   followingPlayerInfo: {
     flex: 1,
@@ -3481,37 +3541,21 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   followingPlayerFirstName: {
-    fontSize: 16,
-    fontWeight: '500',
+    fontSize: 15,
+    fontWeight: '600',
   },
   followingPlayerLastName: {
     fontSize: 13,
     fontWeight: '400',
   },
-  followBackButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  followBackButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
   unfollowButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    padding: 8,
     borderRadius: 8,
     borderWidth: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    minWidth: 80,
-  },
-  unfollowButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+    minWidth: 36,
+    minHeight: 36,
   },
   emptyFollowingContainer: {
     paddingVertical: 20,
@@ -3530,16 +3574,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     borderRadius: 12,
     borderWidth: 1,
-    backgroundColor: 'transparent',
   },
   followingSectionButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
-    letterSpacing: 0.2,
   },
   settingItem: {
     flexDirection: 'row',
@@ -3660,7 +3702,7 @@ const styles = StyleSheet.create({
   },
   streaksRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 12,
   },
   advancedStatBox: {
     flex: 1,
@@ -3681,22 +3723,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   formCard: {
-    padding: 12,
+    padding: 16,
     borderRadius: 12,
     borderWidth: 1.5,
-    marginBottom: 10,
-    gap: 8,
+    marginBottom: 12,
+    gap: 12,
   },
   formHeader: {
     alignItems: 'center',
-    gap: 2,
+    gap: 4,
   },
   formTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
   },
   formSubtitle: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '400',
   },
   formContainer: {
@@ -3721,109 +3763,42 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   streakCard: {
-    padding: 12,
+    padding: 16,
     borderRadius: 12,
     borderWidth: 1.5,
     alignItems: 'center',
-    gap: 6,
-    minHeight: 100,
+    gap: 8,
+    minHeight: 140,
     justifyContent: 'center',
   },
   streakIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 2,
+    marginBottom: 4,
   },
   streakValue: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '700',
-    lineHeight: 24,
+    lineHeight: 28,
   },
   streakLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
   streakSubLabel: {
     fontSize: 11,
     fontWeight: '500',
   },
+  opponentsContainer: {
+    gap: 12,
+  },
   opponentsRow: {
     flexDirection: 'row',
     gap: 12,
     marginTop: 12,
-  },
-  opponentsContainer: {
-    gap: 8,
-    marginTop: 8,
-  },
-  opponentCard: {
-    padding: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  opponentCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  opponentIconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  opponentCardHeaderText: {
-    flex: 1,
-    gap: 3,
-  },
-  opponentCardTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    opacity: 0.7,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  opponentCardName: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  opponentCardSubtitle: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  opponentCardStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 0,
-  },
-  opponentCardBody: {
-    alignItems: 'center',
-    gap: 10,
-  },
-  opponentCardNameContainer: {
-    alignItems: 'center',
-    width: '100%',
-  },
-  opponentCardStats: {
-    flexDirection: 'row',
-    gap: 4,
-    alignItems: 'center',
-  },
-  opponentCardStatBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    minWidth: 36,
-    alignItems: 'center',
-  },
-  opponentCardStatValue: {
-    fontSize: 11,
-    fontWeight: '700',
   },
   rivalBox: {
     flexDirection: 'row',
@@ -3861,6 +3836,10 @@ const styles = StyleSheet.create({
   opponentEmoji: {
     fontSize: 20,
     lineHeight: 24,
+  },
+  opponentIconContainer: {
+    alignItems: 'center',
+    marginBottom: 8,
   },
   opponentTitle: {
     fontSize: 11,
@@ -3918,6 +3897,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  opponentStats: {
+    fontSize: 13,
+    fontWeight: '400',
+  },
   // Styles pour le modal de détails
   modalContainer: {
     flex: 1,
@@ -3942,6 +3925,9 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     flex: 1,
+  },
+  modalCloseButton: {
+    padding: 4,
   },
   modalContent: {
     flex: 1,
@@ -4069,6 +4055,81 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
   reactionGroupTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Signalement de photo
+  reportModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  reportModalContent: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  reportModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  reportModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  reportModalCloseButton: {
+    padding: 4,
+  },
+  reportModalDescription: {
+    fontSize: 14,
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  reportReasonsContainer: {
+    gap: 10,
+    marginBottom: 24,
+  },
+  reportReasonButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  reportReasonButtonActive: {
+    borderWidth: 1.5,
+  },
+  reportReasonText: {
+    fontSize: 15,
+    fontWeight: '500',
+    flex: 1,
+  },
+  reportSubmitButton: {
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  reportSubmitButtonDisabled: {
+    opacity: 0.5,
+  },
+  reportSubmitButtonText: {
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },

@@ -63,6 +63,8 @@ export interface MatchDTO {
   running_since: string | null;
   terrain_number: number | null;
   live_score: string | null;
+  referee_id: string | null; // GUID - ID de l'arbitre du match
+  server_id: string | null; // GUID - ID du joueur qui sert actuellement
 }
 
 // Compétition

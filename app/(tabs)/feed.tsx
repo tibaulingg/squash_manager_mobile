@@ -19,7 +19,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
 import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
 import { getMatchSpecialStatus } from '@/utils/match-helpers';
-import { getActiveSeasons, getSeasonFromBoxMembership, getDefaultSeason } from '@/utils/season-helpers';
+import { getActiveSeasons } from '@/utils/season-helpers';
 
 export default function FeedScreen() {
   const colorScheme = useColorScheme();

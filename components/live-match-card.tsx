@@ -5,6 +5,7 @@ import { PlayerAvatar } from '@/components/player-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
+import { useAuth } from '@/contexts/AuthContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import type { BoxDTO, MatchDTO, PlayerDTO } from '@/types/api';
 
@@ -20,7 +21,11 @@ interface LiveMatchCardProps {
 export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onRefereePress }: LiveMatchCardProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
+  const { user } = useAuth();
   const [timeElapsed, setTimeElapsed] = useState<string>('');
+  
+  // Vérifier si l'utilisateur connecté est l'arbitre du match
+  const isReferee = user && match.referee_id && user.id === match.referee_id;
 
   // Calculer le temps écoulé depuis le début du match (format MM:SS)
   useEffect(() => {
@@ -67,6 +72,21 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
   };
 
   const gameScores = parseGameScores(match.live_score);
+  
+  // Format du nom complet du joueur
+  const playerAName = `${playerA.first_name} ${playerA.last_name}`.trim();
+  const playerBName = `${playerB.first_name} ${playerB.last_name}`.trim();
+
+  // Déterminer qui sert basé sur server_id
+  const isPlayerAServing = match.server_id === playerA.id;
+  const isPlayerBServing = match.server_id === playerB.id;
+
+  // Vérifier si un set est fini (au moins 11 points et 2 points d'écart)
+  const isSetFinished = (scoreA: number, scoreB: number): boolean => {
+    const maxScore = Math.max(scoreA, scoreB);
+    const diff = Math.abs(scoreA - scoreB);
+    return maxScore >= 11 && diff >= 2;
+  };
 
   return (
     <View style={[styles.card, { 
@@ -74,7 +94,7 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
       borderColor: colors.text + '12',
       shadowColor: '#000',
     }]}>
-      {/* Header avec fond distinct */}
+      {/* Header compact */}
       <View style={[styles.header, { 
         backgroundColor: colorScheme === 'dark' ? '#252525' : '#f8f9fa',
         borderBottomColor: colors.text + '08',
@@ -89,34 +109,28 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
               </ThemedText>
             )}
           </View>
+          {box && (
+            <>
+              <View style={[styles.boxChip, { 
+                backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#ffffff',
+                borderColor: colors.text + '15',
+              }]}>
+                <IconSymbol name="square.grid.2x2.fill" size={9} color={colors.text + '70'} />
+                <ThemedText style={[styles.boxText, { color: colors.text }]}>
+                  {box.name}
+                </ThemedText>
+              </View>
+              {match.terrain_number && (
+                <ThemedText style={[styles.terrainInline, { color: colors.text + '70' }]}>
+                  T{match.terrain_number}
+                </ThemedText>
+              )}
+            </>
+          )}
         </View>
         
         <View style={styles.headerRight}>
-          {box && (
-            <View style={[styles.boxChip, { 
-              backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#ffffff',
-              borderColor: colors.text + '15',
-            }]}>
-              <IconSymbol name="square.grid.2x2.fill" size={10} color={colors.text + '70'} />
-              <ThemedText style={[styles.boxText, { color: colors.text }]}>
-                {box.name}
-              </ThemedText>
-            </View>
-          )}
-          
-          {match.terrain_number && (
-            <View style={[styles.terrainChip, { 
-              backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#ffffff',
-              borderColor: colors.text + '15',
-            }]}>
-              <IconSymbol name="sportscourt.fill" size={10} color={colors.text + '70'} />
-              <ThemedText style={[styles.terrainText, { color: colors.text }]}>
-                Terrain {match.terrain_number}
-              </ThemedText>
-            </View>
-          )}
-          
-          {onRefereePress && (
+          {onRefereePress && isReferee && (
             <TouchableOpacity
               style={[styles.refereeButton, { 
                 backgroundColor: PRIMARY_COLOR + '15',
@@ -125,87 +139,116 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
               onPress={() => onRefereePress(match.id)}
               activeOpacity={0.7}
             >
-              <IconSymbol name="whistle.fill" size={12} color={PRIMARY_COLOR} />
+              <IconSymbol name="checkmark.circle.fill" size={12} color={PRIMARY_COLOR} />
               <ThemedText style={[styles.refereeText, { color: PRIMARY_COLOR }]}>
-                Arbitrage
+                Arbitrer
               </ThemedText>
             </TouchableOpacity>
           )}
         </View>
       </View>
 
-      {/* Contenu du match avec fond clair */}
+      {/* Contenu compact avec scores */}
       <View style={[styles.content, { 
         backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
       }]}>
-        <View style={styles.playersRow}>
-          {/* Joueur 1 : Nom à gauche, Avatar à droite */}
+        {/* Joueur A avec ses scores */}
+        <View style={styles.scoreRow}>
           <TouchableOpacity
-            style={[styles.playerContainer, styles.playerLeft]}
+            style={styles.playerContainer}
             onPress={() => onPlayerPress?.(playerA.id)}
             activeOpacity={0.6}
             disabled={!onPlayerPress}
           >
-            <View style={[styles.playerNameContainer, styles.playerNameContainerLeft]}>
-              <ThemedText style={[styles.playerFirstName, { color: colors.text }]} numberOfLines={1}>
-                {playerA.first_name}
-              </ThemedText>
-              <ThemedText style={[styles.playerLastName, { color: colors.text }]} numberOfLines={1}>
-                {playerA.last_name}
-              </ThemedText>
-            </View>
             <PlayerAvatar
               firstName={playerA.first_name || 'Joueur'}
               lastName={playerA.last_name || ''}
               pictureUrl={playerA.picture}
-              size={32}
+              size={20}
             />
-          </TouchableOpacity>
-
-          <View style={styles.scoreColumn}>
-            <View style={[styles.scoreContainer, { 
-              backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f8f9fa',
-              borderColor: colors.text + '10',
-            }]}>
-              <ThemedText style={[styles.score, { color: colors.text }]}>
-                {scoreA}
-              </ThemedText>
-              <View style={[styles.scoreSeparator, { backgroundColor: colors.text + '25' }]} />
-              <ThemedText style={[styles.score, { color: colors.text }]}>
-                {scoreB}
-              </ThemedText>
-            </View>
-            
-            {/* Scores détaillés de chaque jeu */}
-            {gameScores.length > 0 && (
-              <View style={[styles.gameScoresContainer, { 
-                backgroundColor: colorScheme === 'dark' ? '#1f1f1f' : '#f0f0f0',
-                borderColor: colors.text + '08',
-              }]}>
-                {gameScores.map((game, index) => (
-                  <View key={index} style={styles.gameScoreRow}>
-                    <ThemedText style={[styles.gameScore, { 
-                      color: colors.text + '70',
-                      fontWeight: index === gameScores.length - 1 ? '700' : '500',
-                    }]}>
-                      {game.scoreA}
-                    </ThemedText>
-                    <View style={[styles.gameScoreSeparator, { backgroundColor: colors.text + '15' }]} />
-                    <ThemedText style={[styles.gameScore, { 
-                      color: colors.text + '70',
-                      fontWeight: index === gameScores.length - 1 ? '700' : '500',
-                    }]}>
-                      {game.scoreB}
-                    </ThemedText>
-                  </View>
-                ))}
+            <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
+              {playerAName}
+            </ThemedText>
+            {isPlayerAServing && (
+              <View style={styles.squashBall}>
+                <View style={styles.squashBallBase} />
+                <View style={styles.squashBallDot1} />
+                <View style={styles.squashBallDot2} />
               </View>
             )}
+          </TouchableOpacity>
+          <View style={styles.scoresContainer}>
+            {gameScores.length > 0 ? (
+              gameScores.map((game, index) => {
+                const isWon = game.scoreA > game.scoreB;
+                const isCurrentSet = index === gameScores.length - 1;
+                const finished = isSetFinished(game.scoreA, game.scoreB);
+                
+                if (finished) {
+                  return (
+                    <View
+                      key={index}
+                      style={[
+                        styles.scoreBadge,
+                        isWon 
+                          ? { backgroundColor: '#22c55e' }
+                          : { backgroundColor: '#ef4444' }
+                      ]}
+                    >
+                      <ThemedText style={styles.scoreBadgeText}>
+                        {game.scoreA}
+                      </ThemedText>
+                    </View>
+                  );
+                }
+                
+                if (isCurrentSet) {
+                  // Set en cours - afficher avec un badge distinctif
+                  return (
+                    <View
+                      key={index}
+                      style={[
+                        styles.currentSetBadge,
+                        { 
+                          backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f0f0f0',
+                          borderColor: colors.text + '30',
+                        }
+                      ]}
+                    >
+                      <ThemedText style={[styles.currentSetScore, { color: colors.text }]}>
+                        {game.scoreA}
+                      </ThemedText>
+                    </View>
+                  );
+                }
+                
+                return (
+                  <ThemedText 
+                    key={index}
+                    style={[
+                      styles.gameScoreText, 
+                      { color: colors.text + '70' },
+                    ]}
+                  >
+                    {String(game.scoreA).padStart(2, ' ')}
+                  </ThemedText>
+                );
+              })
+            ) : (
+              <ThemedText style={[styles.gameScoreText, { color: colors.text }]}>
+                {String(scoreA).padStart(2, ' ')}
+              </ThemedText>
+            )}
           </View>
+        </View>
 
-          {/* Joueur 2 : Avatar à gauche, Nom à droite */}
+        {/* Séparateur */}
+        <View style={[styles.separator, { backgroundColor: colors.text + '10' }]} />
+
+        {/* Joueur B avec ses scores */}
+        <View style={styles.scoreRow}>
           <TouchableOpacity
-            style={[styles.playerContainer, styles.playerRight]}
+            style={styles.playerContainer}
             onPress={() => onPlayerPress?.(playerB.id)}
             activeOpacity={0.6}
             disabled={!onPlayerPress}
@@ -214,17 +257,82 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
               firstName={playerB.first_name || 'Joueur'}
               lastName={playerB.last_name || ''}
               pictureUrl={playerB.picture}
-              size={32}
+              size={20}
             />
-            <View style={[styles.playerNameContainer, styles.playerNameContainerRight]}>
-              <ThemedText style={[styles.playerFirstName, { color: colors.text }]} numberOfLines={1}>
-                {playerB.first_name}
-              </ThemedText>
-              <ThemedText style={[styles.playerLastName, { color: colors.text }]} numberOfLines={1}>
-                {playerB.last_name}
-              </ThemedText>
-            </View>
+            <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
+              {playerBName}
+            </ThemedText>
+            {isPlayerBServing && (
+              <View style={styles.squashBall}>
+                <View style={styles.squashBallBase} />
+                <View style={styles.squashBallDot1} />
+                <View style={styles.squashBallDot2} />
+              </View>
+            )}
           </TouchableOpacity>
+          <View style={styles.scoresContainer}>
+            {gameScores.length > 0 ? (
+              gameScores.map((game, index) => {
+                const isWon = game.scoreB > game.scoreA;
+                const isCurrentSet = index === gameScores.length - 1;
+                const finished = isSetFinished(game.scoreA, game.scoreB);
+                
+                if (finished) {
+                  return (
+                    <View
+                      key={index}
+                      style={[
+                        styles.scoreBadge,
+                        isWon 
+                          ? { backgroundColor: '#22c55e' }
+                          : { backgroundColor: '#ef4444' }
+                      ]}
+                    >
+                      <ThemedText style={styles.scoreBadgeText}>
+                        {game.scoreB}
+                      </ThemedText>
+                    </View>
+                  );
+                }
+                
+                if (isCurrentSet) {
+                  // Set en cours - afficher avec un badge distinctif
+                  return (
+                    <View
+                      key={index}
+                      style={[
+                        styles.currentSetBadge,
+                        { 
+                          backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f0f0f0',
+                          borderColor: colors.text + '30',
+                        }
+                      ]}
+                    >
+                      <ThemedText style={[styles.currentSetScore, { color: colors.text }]}>
+                        {game.scoreB}
+                      </ThemedText>
+                    </View>
+                  );
+                }
+                
+                return (
+                  <ThemedText 
+                    key={index}
+                    style={[
+                      styles.gameScoreText, 
+                      { color: colors.text + '70' },
+                    ]}
+                  >
+                    {String(game.scoreB).padStart(2, ' ')}
+                  </ThemedText>
+                );
+              })
+            ) : (
+              <ThemedText style={[styles.gameScoreText, { color: colors.text }]}>
+                {String(scoreB).padStart(2, ' ')}
+              </ThemedText>
+            )}
+          </View>
         </View>
       </View>
     </View>
@@ -233,179 +341,160 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     overflow: 'hidden',
-    marginBottom: 12,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    marginBottom: 8,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderBottomWidth: 1,
-    gap: 8,
+    gap: 6,
   },
   headerLeft: {
     flex: 1,
-  },
-  headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  boxChip: {
+  headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+  },
+  boxChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     borderWidth: 0.5,
   },
   boxText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
   liveIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 5,
-    alignSelf: 'flex-start',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
   liveText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   timeElapsed: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '500',
     letterSpacing: 0.2,
   },
   terrainChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     borderWidth: 0.5,
   },
   terrainText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
-  content: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  terrainInline: {
+    fontSize: 9,
+    fontWeight: '600',
+    letterSpacing: 0.1,
+    marginLeft: 2,
   },
-  playersRow: {
+  content: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  scoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    minHeight: 20,
   },
   playerContainer: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    minWidth: 0,
+    gap: 6,
+    marginRight: 8,
+    minWidth: 100,
   },
-  playerLeft: {
-    justifyContent: 'flex-start',
+  playerName: {
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.1,
   },
-  playerRight: {
+  scoresContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 80,
     justifyContent: 'flex-end',
   },
-  playerNameContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    minHeight: 32, // Aligner avec la hauteur de l'avatar
+  gameScoreText: {
+    fontSize: 12,
+    fontWeight: '500',
+    width: 20,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
   },
-  playerNameContainerLeft: {
-    alignItems: 'flex-start',
-  },
-  playerNameContainerRight: {
-    alignItems: 'flex-end',
-  },
-  playerFirstName: {
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.1,
-    lineHeight: 13,
-  },
-  playerLastName: {
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.1,
-    lineHeight: 13,
-    marginTop: 0,
-  },
-  scoreColumn: {
-    alignItems: 'center',
-    gap: 8,
-  },
-  scoreContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  currentSetBadge: {
+    minWidth: 28,
+    height: 20,
     borderRadius: 10,
     borderWidth: 1,
-    minWidth: 70,
-  },
-  score: {
-    fontSize: 18,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    minWidth: 22,
-    textAlign: 'center',
-  },
-  scoreSeparator: {
-    width: 1.5,
-    height: 20,
-  },
-  gameScoresContainer: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    gap: 4,
-    minWidth: 60,
-  },
-  gameScoreRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
   },
-  gameScore: {
+  currentSetScore: {
     fontSize: 12,
-    minWidth: 20,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
     textAlign: 'center',
+    lineHeight: 14,
+    includeFontPadding: false,
   },
-  gameScoreSeparator: {
-    width: 1,
-    height: 12,
+  separator: {
+    height: 1,
+    marginVertical: 4,
+  },
+  scoreBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scoreBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   refereeButton: {
     flexDirection: 'row',
@@ -413,12 +502,45 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 6,
+    borderRadius: 4,
     borderWidth: 1,
+    minHeight: 24,
   },
   refereeText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
     letterSpacing: 0.1,
+  },
+  squashBall: {
+    width: 12,
+    height: 12,
+    position: 'relative',
+    marginLeft: 3,
+    alignSelf: 'center',
+  },
+  squashBallBase: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#000000',
+    position: 'absolute',
+  },
+  squashBallDot1: {
+    width: 2,
+    height: 2,
+    borderRadius: 1.5,
+    backgroundColor: '#fbbf24',
+    position: 'absolute',
+    top: 2,
+    left: 3,
+  },
+  squashBallDot2: {
+    width: 2,
+    height: 2,
+    borderRadius: 1.5,
+    backgroundColor: '#fbbf24',
+    position: 'absolute',
+    bottom: 5,
+    right: 5,
   },
 });

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, RefreshControl, ScrollView, StyleSheet, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -73,6 +73,7 @@ export default function BoxScreen() {
   const [competitions, setCompetitions] = useState<CompetitionDTO[]>([]);
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(null);
   const [seasonsByCompetition, setSeasonsByCompetition] = useState<Map<string, SeasonDTO[]>>(new Map());
+  const [allSeasons, setAllSeasons] = useState<SeasonDTO[]>([]);
   const { user } = useAuth();
 
   // Sauvegarder la compétition sélectionnée
@@ -95,6 +96,9 @@ export default function BoxScreen() {
       // Filtrer les compétitions actives
       const activeCompetitions = competitionsList.filter(c => c.active);
       setCompetitions(activeCompetitions);
+
+      // Sauvegarder toutes les saisons pour le filtrage des matchs en live
+      setAllSeasons(allSeasons);
 
       // Grouper les saisons actives par compétition
       const activeSeasons = getActiveSeasons(allSeasons);
@@ -434,6 +438,24 @@ export default function BoxScreen() {
     setShowChatModal(true);
   }, [user]);
 
+  // Filtrer les matchs en live pour n'afficher que ceux de la compétition sélectionnée et trier par terrain
+  const filteredLiveMatches = useMemo(() => {
+    if (!selectedCompetitionId || liveMatches.length === 0) return [];
+    
+    const competitionSeasons = seasonsByCompetition.get(selectedCompetitionId) || [];
+    const competitionSeasonIds = new Set(competitionSeasons.map(s => s.id));
+    
+    const filtered = liveMatches.filter(match => competitionSeasonIds.has(match.season_id));
+    
+    // Trier par terrain ascendant (null en dernier)
+    return filtered.sort((a, b) => {
+      if (a.terrain_number === null && b.terrain_number === null) return 0;
+      if (a.terrain_number === null) return 1;
+      if (b.terrain_number === null) return -1;
+      return a.terrain_number - b.terrain_number;
+    });
+  }, [liveMatches, selectedCompetitionId, seasonsByCompetition]);
+
   return (
     <ThemedView style={styles.container}>
       <AppBar
@@ -535,10 +557,10 @@ export default function BoxScreen() {
           </View>
         )}
 
-        {/* Matchs en live */}
-        {liveMatches.length > 0 && (
+        {/* Matchs en live - uniquement ceux de la compétition sélectionnée et pas pendant le chargement */}
+        {!isLoading && filteredLiveMatches.length > 0 && (
           <View style={styles.liveMatchesSection}>
-            {liveMatches.map((match) => {
+            {filteredLiveMatches.map((match) => {
               const playerA = allPlayers.find((p) => p.id === match.player_a_id);
               const playerB = allPlayers.find((p) => p.id === match.player_b_id);
               const box = allBoxes.find((b) => b.id === match.box_id);
@@ -718,10 +740,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   loadingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 40,
-    minHeight: 300,
   },
   loadingText: {
     marginTop: 16,
@@ -825,7 +847,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   liveMatchesSection: {
-    marginBottom: 24,
+    marginBottom: 16,
   },
   liveMatchesHeader: {
     flexDirection: 'row',

@@ -5,8 +5,10 @@ import { ActivityIndicator, Modal, ScrollView, StyleSheet, TouchableOpacity, Vie
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppBar } from '@/components/app-bar';
+import { PlayerAvatar } from '@/components/player-avatar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors, PRIMARY_COLOR } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { api } from '@/services/api';
@@ -28,6 +30,7 @@ interface GameState {
   gamesA: number;
   gamesB: number;
   scoreHistory: ScoreEvent[];
+  completedGames: Array<{ scoreA: number; scoreB: number }>;
   wasGameWon: boolean;
   gameWinner?: 'A' | 'B';
   currentService: 'A' | 'B' | null;
@@ -57,7 +60,28 @@ export default function RefereeScreen() {
   const [showMatchSummary, setShowMatchSummary] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [completedGames, setCompletedGames] = useState<Array<{ scoreA: number; scoreB: number }>>([]);
+  const [showAllSetsModal, setShowAllSetsModal] = useState(false);
+  const [playerAColor, setPlayerAColor] = useState('#fbbf24'); // Jaune
+  const [playerBColor, setPlayerBColor] = useState('#000000'); // Noir
+  const [showColorPicker, setShowColorPicker] = useState<'A' | 'B' | null>(null);
+  const [stateBeforeMatchEnd, setStateBeforeMatchEnd] = useState<GameState | null>(null);
   const timelineScrollRef = useRef<ScrollView>(null);
+
+  // Palette de couleurs disponibles
+  const colorPalette = [
+    '#fbbf24', // jaune
+    '#000000', // noir
+    PRIMARY_COLOR,
+    '#ef4444', // rouge
+    '#3b82f6', // bleu
+    '#10b981', // vert
+    '#f59e0b', // orange
+    '#8b5cf6', // violet
+    '#ec4899', // rose
+    '#06b6d4', // cyan
+    '#84cc16', // lime
+    '#f97316', // orange foncé
+  ];
 
   useEffect(() => {
     const loadMatchData = async () => {
@@ -86,6 +110,23 @@ export default function RefereeScreen() {
           setGamesA(savedGamesA);
           setGamesB(savedGamesB);
 
+          // Charger les joueurs
+          const players = await api.getPlayersCached();
+          const playerA_data = players.find((p) => p.id === foundMatch.player_a_id);
+          const playerB_data = players.find((p) => p.id === foundMatch.player_b_id);
+          setPlayerA(playerA_data || null);
+          setPlayerB(playerB_data || null);
+
+          // Restaurer le service depuis server_id si disponible
+          let restoredService: 'A' | 'B' | null = null;
+          if (foundMatch.server_id && playerA_data && playerB_data) {
+            if (foundMatch.server_id === playerA_data.id) {
+              restoredService = 'A';
+            } else if (foundMatch.server_id === playerB_data.id) {
+              restoredService = 'B';
+            }
+          }
+
           // Parser le live_score pour restaurer l'état
           if (foundMatch.live_score && foundMatch.live_score.trim() !== '') {
             const parsedState = parseLiveScore(foundMatch.live_score, savedGamesA, savedGamesB);
@@ -93,15 +134,13 @@ export default function RefereeScreen() {
             setScoreA(parsedState.currentScoreA);
             setScoreB(parsedState.currentScoreB);
             
-            // Si on a un score en cours, on doit avoir un service actif
+            // Si on a un score en cours, restaurer le service depuis server_id
             if (parsedState.currentScoreA > 0 || parsedState.currentScoreB > 0) {
-              // On ne peut pas déterminer qui sert depuis le live_score seul
-              // On laisse currentService à null, l'utilisateur devra continuer
-              setCurrentService(null);
+              setCurrentService(restoredService);
               setServicePosition('R');
             } else {
-              // Score 0-0, pas de service encore
-              setCurrentService(null);
+              // Score 0-0, pas de service encore (sauf si server_id est défini)
+              setCurrentService(restoredService);
               setServicePosition('R');
             }
           } else {
@@ -119,16 +158,10 @@ export default function RefereeScreen() {
               setScoreA(0);
               setScoreB(0);
             }
-            setCurrentService(null);
+            // Restaurer le service depuis server_id si disponible
+            setCurrentService(restoredService);
             setServicePosition('R');
           }
-
-          // Charger les joueurs
-          const players = await api.getPlayersCached();
-          const playerA_data = players.find((p) => p.id === foundMatch!.player_a_id);
-          const playerB_data = players.find((p) => p.id === foundMatch!.player_b_id);
-          setPlayerA(playerA_data || null);
-          setPlayerB(playerB_data || null);
         }
       } catch (error) {
         console.error('Erreur chargement match:', error);
@@ -287,6 +320,28 @@ export default function RefereeScreen() {
     }
   };
 
+  // Fonction pour mettre à jour le server_id dans l'API
+  const updateServerId = async (serverPlayer: 'A' | 'B' | null) => {
+    if (!match || !playerA || !playerB) return;
+    
+    try {
+      const serverId = serverPlayer === 'A' ? playerA.id : serverPlayer === 'B' ? playerB.id : null;
+      
+      const { API_BASE_URL } = require('@/constants/config');
+      await fetch(`${API_BASE_URL}/Matches/${match.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...match,
+          server_id: serverId,
+          update_server: true
+        }),
+      });
+    } catch (error) {
+      console.error('Erreur mise à jour server_id:', error);
+    }
+  };
+
   const handleScoreIncrement = async (player: 'A' | 'B') => {
     // Ne pas permettre d'incrémenter si le match est terminé
     if (gamesA >= 3 || gamesB >= 3) {
@@ -296,6 +351,9 @@ export default function RefereeScreen() {
     if (currentService === null && scoreHistory.length === 0) {
       setCurrentService(player);
       
+      // Mettre à jour le server_id dans l'API
+      updateServerId(player);
+      
       // Sauvegarder l'état avant le choix du service
       const currentState: GameState = {
         scoreA: 0,
@@ -303,6 +361,7 @@ export default function RefereeScreen() {
         gamesA,
         gamesB,
         scoreHistory: [],
+        completedGames,
         wasGameWon: false,
         currentService: null,
         servicePosition: 'R',
@@ -344,6 +403,7 @@ export default function RefereeScreen() {
       gamesA,
       gamesB,
       scoreHistory: [...scoreHistory],
+      completedGames: [...completedGames],
       wasGameWon: false,
       currentService,
       servicePosition,
@@ -403,6 +463,7 @@ export default function RefereeScreen() {
         gamesA: newGamesA,
         gamesB: newGamesB,
         scoreHistory: updatedHistory,
+        completedGames: newCompletedGames,
         wasGameWon: true,
         gameWinner,
         currentService,
@@ -427,16 +488,33 @@ export default function RefereeScreen() {
       // Mettre à jour le live_score (jeu terminé, pas de jeu en cours)
       const liveScore = generateLiveScore(newCompletedGames, 0, 0, newGamesA, newGamesB);
       
-      // Mettre à jour les scores (jeux gagnés) et le live_score dans l'API
-      // Utiliser await pour s'assurer que la mise à jour est bien effectuée
-      await updateMatchScores(newGamesA, newGamesB, liveScore);
-      
       // Vérifier si le match est terminé (3 jeux gagnants)
       if (newGamesA >= 3 || newGamesB >= 3) {
+        // Sauvegarder l'état avant la fin du match pour pouvoir le restaurer si on annule
+        const stateBeforeEnd: GameState = {
+          scoreA: newScoreA,
+          scoreB: newScoreB,
+          gamesA: newGamesA,
+          gamesB: newGamesB,
+          scoreHistory: updatedHistory,
+          completedGames: newCompletedGames,
+          wasGameWon: true,
+          gameWinner,
+          currentService,
+          servicePosition: serviceForEvent,
+        };
+        setStateBeforeMatchEnd(stateBeforeEnd);
+        
+        // Mettre à jour les scores (jeux gagnés) et le live_score dans l'API
+        await updateMatchScores(newGamesA, newGamesB, liveScore);
+        
         // Match terminé - afficher le récapitulatif
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowMatchSummary(true);
       } else {
+        // Mettre à jour les scores (jeux gagnés) et le live_score dans l'API
+        await updateMatchScores(newGamesA, newGamesB, liveScore);
+        
         // Nouveau jeu commencé
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
@@ -454,11 +532,13 @@ export default function RefereeScreen() {
       if (player === currentService) {
         // Le joueur qui avait le service a marqué, il continue à servir et alterne R/L
         setServicePosition(serviceForEvent); // Utiliser le service alterné
-        // currentService reste le même
+        // currentService reste le même, pas besoin de mettre à jour server_id
       } else {
         // Le joueur qui n'avait pas le service a marqué, il reprend le service
         setCurrentService(player);
         setServicePosition(serviceForEvent); // Utiliser R
+        // Mettre à jour le server_id dans l'API
+        updateServerId(player);
       }
     }
   };
@@ -474,17 +554,13 @@ export default function RefereeScreen() {
     // Récupérer le dernier état sauvegardé
     const previousState = historyStack[historyStack.length - 1];
     
-    // Si un jeu a été gagné dans l'état précédent, retirer le dernier jeu terminé
-    if (previousState.wasGameWon) {
-      setCompletedGames((prev) => prev.slice(0, -1));
-    }
-    
     // Restaurer l'état
     setScoreA(previousState.scoreA);
     setScoreB(previousState.scoreB);
     setGamesA(previousState.gamesA);
     setGamesB(previousState.gamesB);
     setScoreHistory(previousState.scoreHistory);
+    setCompletedGames(previousState.completedGames);
     setCurrentService(previousState.currentService);
     setServicePosition(previousState.servicePosition);
     
@@ -492,10 +568,7 @@ export default function RefereeScreen() {
     setHistoryStack((prev) => prev.slice(0, -1));
     
     // Mettre à jour le live_score après l'undo
-    const currentCompletedGames = previousState.wasGameWon 
-      ? completedGames.slice(0, -1) 
-      : completedGames;
-    const liveScore = generateLiveScore(currentCompletedGames, previousState.scoreA, previousState.scoreB, previousState.gamesA, previousState.gamesB);
+    const liveScore = generateLiveScore(previousState.completedGames, previousState.scoreA, previousState.scoreB, previousState.gamesA, previousState.gamesB);
     updateLiveScore(liveScore);
     
     // Scroller vers le bas si nécessaire
@@ -540,6 +613,7 @@ export default function RefereeScreen() {
       
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowMatchSummary(false);
+      setStateBeforeMatchEnd(null);
       
       // Retourner à l'écran précédent après un court délai
       setTimeout(() => {
@@ -604,57 +678,110 @@ export default function RefereeScreen() {
       <View style={styles.content}>
         {/* Header avec noms des joueurs */}
         <View style={[styles.header, { borderBottomColor: colors.text + '15' }]}>
-          <View style={styles.playerHeader}>
-            <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
-              {playerA.first_name} {playerA.last_name}
-            </ThemedText>
-            <View style={styles.gamesContainer}>
-              {Array.from({ length: 3 }).map((_, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.gameBadge,
-                    {
-                      backgroundColor: index < gamesA ? PRIMARY_COLOR + '20' : 'transparent',
-                      borderColor: index < gamesA ? PRIMARY_COLOR : colors.text + '20',
-                    },
-                  ]}
-                >
-                  {index < gamesA && (
-                    <ThemedText style={[styles.gameBadgeText, { color: PRIMARY_COLOR }]}>
-                      ✓
-                    </ThemedText>
-                  )}
-                </View>
-              ))}
+          <TouchableOpacity 
+            style={styles.playerHeader}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowColorPicker('A');
+            }}
+            activeOpacity={0.7}
+          >
+            <PlayerAvatar
+              firstName={playerA.first_name}
+              lastName={playerA.last_name}
+              pictureUrl={playerA.picture}
+              size={36}
+              backgroundColor={playerAColor + '20'}
+              textColor={playerAColor}
+            />
+            <View style={styles.playerInfo}>
+              <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
+                {playerA.first_name} {playerA.last_name}
+              </ThemedText>
+              <View style={styles.gamesContainer}>
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <View
+                    key={index}
+                    style={[
+                      styles.gameBadge,
+                      {
+                        backgroundColor: index < gamesA ? playerAColor + '20' : 'transparent',
+                        borderColor: index < gamesA ? playerAColor : colors.text + '20',
+                      },
+                    ]}
+                  >
+                    {index < gamesA && (
+                      <ThemedText style={[styles.gameBadgeText, { color: playerAColor }]}>
+                        ✓
+                      </ThemedText>
+                    )}
+                  </View>
+                ))}
+              </View>
             </View>
-          </View>
+          </TouchableOpacity>
           
-          <View style={styles.playerHeader}>
-            <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
-              {playerB.first_name} {playerB.last_name}
-            </ThemedText>
-            <View style={styles.gamesContainer}>
-              {Array.from({ length: 3 }).map((_, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.gameBadge,
-                    {
-                      backgroundColor: index < gamesB ? '#ef4444' + '20' : 'transparent',
-                      borderColor: index < gamesB ? '#ef4444' : colors.text + '20',
-                    },
-                  ]}
-                >
-                  {index < gamesB && (
-                    <ThemedText style={[styles.gameBadgeText, { color: '#ef4444' }]}>
-                      ✓
-                    </ThemedText>
-                  )}
-                </View>
-              ))}
+          {/* Bouton pour gérer tous les sets - centré */}
+          {completedGames.length > 0 && (
+            <View style={styles.manageSetsButtonContainer}>
+              <TouchableOpacity
+                style={[styles.manageSetsButton, { 
+                  backgroundColor: colors.text + '08',
+                  borderColor: colors.text + '20',
+                }]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  setShowAllSetsModal(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="square.grid.2x2.fill" size={16} color={colors.text + '80'} />
+              </TouchableOpacity>
             </View>
-          </View>
+          )}
+          
+          <TouchableOpacity 
+            style={styles.playerHeaderRight}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowColorPicker('B');
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={styles.playerInfoRight}>
+              <ThemedText style={[styles.playerName, styles.playerNameRight, { color: colors.text }]} numberOfLines={1}>
+                {playerB.first_name} {playerB.last_name}
+              </ThemedText>
+              <View style={styles.gamesContainer}>
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <View
+                    key={index}
+                    style={[
+                      styles.gameBadge,
+                      {
+                        backgroundColor: index < gamesB ? playerBColor + '20' : 'transparent',
+                        borderColor: index < gamesB ? playerBColor : colors.text + '20',
+                      },
+                    ]}
+                  >
+                    {index < gamesB && (
+                      <ThemedText style={[styles.gameBadgeText, { color: playerBColor }]}>
+                        ✓
+                      </ThemedText>
+                    )}
+                  </View>
+                ))}
+              </View>
+            </View>
+            <PlayerAvatar
+              firstName={playerB.first_name}
+              lastName={playerB.last_name}
+              pictureUrl={playerB.picture}
+              size={36}
+              backgroundColor={playerBColor + '20'}
+              textColor={playerBColor}
+            />
+          </TouchableOpacity>
         </View>
 
         {/* Zone principale avec scores et zones cliquables */}
@@ -666,7 +793,7 @@ export default function RefereeScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.scoreDisplay}>
-              <ThemedText style={[styles.score, { color: PRIMARY_COLOR }]}>
+              <ThemedText style={[styles.score, { color: playerAColor }]}>
                 {scoreA}
               </ThemedText>
             </View>
@@ -674,13 +801,13 @@ export default function RefereeScreen() {
             {currentService === 'A' && (
               <TouchableOpacity
                 style={[styles.serviceIndicator, styles.serviceIndicatorLeft, { 
-                  backgroundColor: PRIMARY_COLOR + '20',
-                  borderColor: PRIMARY_COLOR + '40',
+                  backgroundColor: playerAColor + '20',
+                  borderColor: playerAColor + '40',
                 }]}
                 onPress={handleServiceToggle}
                 activeOpacity={0.7}
               >
-                <ThemedText style={[styles.serviceText, { color: PRIMARY_COLOR }]}>
+                <ThemedText style={[styles.serviceText, { color: playerAColor }]}>
                   {servicePosition}
                 </ThemedText>
               </TouchableOpacity>
@@ -708,7 +835,7 @@ export default function RefereeScreen() {
                             style={[
                               styles.timelineService, 
                               { 
-                                color: PRIMARY_COLOR,
+                                color: playerAColor,
                                 width: 16,
                               }
                             ]}
@@ -722,7 +849,7 @@ export default function RefereeScreen() {
                           style={[
                             styles.timelineScore, 
                             { 
-                              color: event.player === 'A' ? PRIMARY_COLOR : colors.text + '60',
+                              color: event.player === 'A' ? playerAColor : colors.text + '60',
                               fontWeight: event.player === 'A' ? '700' : '500',
                               width: 20,
                               textAlign: 'right',
@@ -741,7 +868,7 @@ export default function RefereeScreen() {
                           style={[
                             styles.timelineScore, 
                             { 
-                              color: event.player === 'B' ? '#ef4444' : colors.text + '60',
+                              color: event.player === 'B' ? playerBColor : colors.text + '60',
                               fontWeight: event.player === 'B' ? '700' : '500',
                               width: 20,
                               textAlign: 'left',
@@ -755,7 +882,7 @@ export default function RefereeScreen() {
                             style={[
                               styles.timelineService, 
                               { 
-                                color: '#ef4444',
+                                color: playerBColor,
                                 width: 16,
                               }
                             ]}
@@ -780,7 +907,7 @@ export default function RefereeScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.scoreDisplay}>
-              <ThemedText style={[styles.score, { color: '#ef4444' }]}>
+              <ThemedText style={[styles.score, { color: playerBColor }]}>
                 {scoreB}
               </ThemedText>
             </View>
@@ -788,13 +915,13 @@ export default function RefereeScreen() {
             {currentService === 'B' && (
               <TouchableOpacity
                 style={[styles.serviceIndicator, styles.serviceIndicatorRight, { 
-                  backgroundColor: '#ef4444' + '20',
-                  borderColor: '#ef4444' + '40',
+                  backgroundColor: playerBColor + '20',
+                  borderColor: playerBColor + '40',
                 }]}
                 onPress={handleServiceToggle}
                 activeOpacity={0.7}
               >
-                <ThemedText style={[styles.serviceText, { color: '#ef4444' }]}>
+                <ThemedText style={[styles.serviceText, { color: playerBColor }]}>
                   {servicePosition}
                 </ThemedText>
               </TouchableOpacity>
@@ -802,6 +929,447 @@ export default function RefereeScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Modal de gestion de tous les sets */}
+      <Modal
+        visible={showAllSetsModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowAllSetsModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <ThemedText style={[styles.modalTitle, { color: colors.text }]}>
+              Gérer les sets
+            </ThemedText>
+            
+            {/* En-tête avec noms des joueurs */}
+            <View style={[styles.setsHeader, { borderBottomColor: colors.text + '20' }]}>
+              <TouchableOpacity 
+                style={styles.setHeaderPlayer}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowColorPicker('A');
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.setHeaderPlayerName, { color: playerAColor }]} numberOfLines={1}>
+                  {playerA?.first_name}
+                </ThemedText>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.setHeaderPlayer}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowColorPicker('B');
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.setHeaderPlayerName, { color: playerBColor }]} numberOfLines={1}>
+                  {playerB?.first_name}
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.allSetsList} showsVerticalScrollIndicator={false}>
+              {/* Sets terminés */}
+              {completedGames.map((game, index) => {
+                const isFinished = (() => {
+                  const maxScore = Math.max(game.scoreA, game.scoreB);
+                  const diff = Math.abs(game.scoreA - game.scoreB);
+                  return maxScore >= 11 && diff >= 2;
+                })();
+                
+                return (
+                  <View
+                    key={`completed-${index}`}
+                    style={[
+                      styles.setItem,
+                      {
+                        backgroundColor: colors.background,
+                        borderColor: colors.text + '20',
+                      },
+                    ]}
+                  >
+                    {/* Ligne compacte avec scores alignés */}
+                    <View style={styles.setScoreRowCompact}>
+                      {/* Joueur A - Contrôles */}
+                      <View style={styles.setScoreControlsCompact}>
+                        <TouchableOpacity
+                          style={[styles.setScoreButtonCompact, { backgroundColor: playerAColor + '20', borderColor: playerAColor }]}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            if (game.scoreA > 0) {
+                              const updatedGames = [...completedGames];
+                              updatedGames[index] = { ...game, scoreA: game.scoreA - 1 };
+                              setCompletedGames(updatedGames);
+                              
+                              // Recalculer les jeux gagnés
+                              let newGamesA = 0;
+                              let newGamesB = 0;
+                              updatedGames.forEach(g => {
+                                if (g.scoreA > g.scoreB) {
+                                  newGamesA++;
+                                } else if (g.scoreB > g.scoreA) {
+                                  newGamesB++;
+                                }
+                              });
+                              setGamesA(newGamesA);
+                              setGamesB(newGamesB);
+                              
+                              const liveScore = generateLiveScore(updatedGames, scoreA, scoreB, newGamesA, newGamesB);
+                              updateMatchScores(newGamesA, newGamesB, liveScore);
+                            }
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerAColor }]}>−</ThemedText>
+                        </TouchableOpacity>
+                        <ThemedText style={[styles.setScoreValueCompact, { color: playerAColor }]}>
+                          {game.scoreA}
+                        </ThemedText>
+                        <TouchableOpacity
+                          style={[styles.setScoreButtonCompact, { backgroundColor: playerAColor + '20', borderColor: playerAColor }]}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            const updatedGames = [...completedGames];
+                            updatedGames[index] = { ...game, scoreA: game.scoreA + 1 };
+                            setCompletedGames(updatedGames);
+                            
+                            // Recalculer les jeux gagnés
+                            let newGamesA = 0;
+                            let newGamesB = 0;
+                            updatedGames.forEach(g => {
+                              if (g.scoreA > g.scoreB) {
+                                newGamesA++;
+                              } else if (g.scoreB > g.scoreA) {
+                                newGamesB++;
+                              }
+                            });
+                            setGamesA(newGamesA);
+                            setGamesB(newGamesB);
+                            
+                            const liveScore = generateLiveScore(updatedGames, scoreA, scoreB, newGamesA, newGamesB);
+                            updateMatchScores(newGamesA, newGamesB, liveScore);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerAColor }]}>+</ThemedText>
+                        </TouchableOpacity>
+                      </View>
+                      
+                      {/* Séparateur */}
+                      <ThemedText style={[styles.setScoreSeparator, { color: colors.text + '40' }]}>
+                        —
+                      </ThemedText>
+                      
+                      {/* Joueur B - Contrôles */}
+                      <View style={styles.setScoreControlsCompact}>
+                        <TouchableOpacity
+                          style={[styles.setScoreButtonCompact, { backgroundColor: playerBColor + '20', borderColor: playerBColor }]}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            if (game.scoreB > 0) {
+                              const updatedGames = [...completedGames];
+                              updatedGames[index] = { ...game, scoreB: game.scoreB - 1 };
+                              setCompletedGames(updatedGames);
+                              
+                              // Recalculer les jeux gagnés
+                              let newGamesA = 0;
+                              let newGamesB = 0;
+                              updatedGames.forEach(g => {
+                                if (g.scoreA > g.scoreB) {
+                                  newGamesA++;
+                                } else if (g.scoreB > g.scoreA) {
+                                  newGamesB++;
+                                }
+                              });
+                              setGamesA(newGamesA);
+                              setGamesB(newGamesB);
+                              
+                              const liveScore = generateLiveScore(updatedGames, scoreA, scoreB, newGamesA, newGamesB);
+                              updateMatchScores(newGamesA, newGamesB, liveScore);
+                            }
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerBColor }]}>−</ThemedText>
+                        </TouchableOpacity>
+                        <ThemedText style={[styles.setScoreValueCompact, { color: playerBColor }]}>
+                          {game.scoreB}
+                        </ThemedText>
+                        <TouchableOpacity
+                          style={[styles.setScoreButtonCompact, { backgroundColor: playerBColor + '20', borderColor: playerBColor }]}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            const updatedGames = [...completedGames];
+                            updatedGames[index] = { ...game, scoreB: game.scoreB + 1 };
+                            setCompletedGames(updatedGames);
+                            
+                            // Recalculer les jeux gagnés
+                            let newGamesA = 0;
+                            let newGamesB = 0;
+                            updatedGames.forEach(g => {
+                              if (g.scoreA > g.scoreB) {
+                                newGamesA++;
+                              } else if (g.scoreB > g.scoreA) {
+                                newGamesB++;
+                              }
+                            });
+                            setGamesA(newGamesA);
+                            setGamesB(newGamesB);
+                            
+                            const liveScore = generateLiveScore(updatedGames, scoreA, scoreB, newGamesA, newGamesB);
+                            updateMatchScores(newGamesA, newGamesB, liveScore);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerBColor }]}>+</ThemedText>
+                        </TouchableOpacity>
+                      </View>
+                      
+                      {/* Bouton supprimer */}
+                      <TouchableOpacity
+                        style={[styles.setDeleteButton, { 
+                          backgroundColor: playerBColor + '10',
+                        }]}
+                        onPress={async () => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                          
+                          // Supprimer le set
+                          const updatedGames = completedGames.filter((_, i) => i !== index);
+                          setCompletedGames(updatedGames);
+                          
+                          // Recalculer les jeux gagnés
+                          let newGamesA = 0;
+                          let newGamesB = 0;
+                          updatedGames.forEach(g => {
+                            if (g.scoreA > g.scoreB) {
+                              newGamesA++;
+                            } else if (g.scoreB > g.scoreA) {
+                              newGamesB++;
+                            }
+                          });
+                          
+                          setGamesA(newGamesA);
+                          setGamesB(newGamesB);
+                          
+                          // Mettre à jour le live_score
+                          const liveScore = generateLiveScore(updatedGames, scoreA, scoreB, newGamesA, newGamesB);
+                          await updateMatchScores(newGamesA, newGamesB, liveScore);
+                          
+                          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <IconSymbol name="trash" size={16} color={playerBColor} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+              
+              {/* Set en cours (si le match n'est pas terminé) */}
+              {(gamesA < 3 && gamesB < 3) && (scoreA > 0 || scoreB > 0 || completedGames.length > 0) && (
+                <View
+                  style={[
+                    styles.setItem,
+                    {
+                      backgroundColor: playerAColor + '08',
+                      borderColor: playerAColor + '40',
+                      borderWidth: 2,
+                    },
+                  ]}
+                >
+                  {/* Ligne compacte avec scores alignés */}
+                  <View style={styles.setScoreRowCompact}>
+                    {/* Joueur A - Contrôles */}
+                    <View style={styles.setScoreControlsCompact}>
+                      <TouchableOpacity
+                        style={[styles.setScoreButtonCompact, { backgroundColor: playerAColor + '20', borderColor: playerAColor }]}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if (scoreA > 0) {
+                            setScoreA(scoreA - 1);
+                            const liveScore = generateLiveScore(completedGames, scoreA - 1, scoreB, gamesA, gamesB);
+                            updateLiveScore(liveScore);
+                          }
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerAColor }]}>−</ThemedText>
+                      </TouchableOpacity>
+                      <ThemedText style={[styles.setScoreValueCompact, { color: playerAColor }]}>
+                        {scoreA}
+                      </ThemedText>
+                      <TouchableOpacity
+                        style={[styles.setScoreButtonCompact, { backgroundColor: playerAColor + '20', borderColor: playerAColor }]}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setScoreA(scoreA + 1);
+                          const liveScore = generateLiveScore(completedGames, scoreA + 1, scoreB, gamesA, gamesB);
+                          updateLiveScore(liveScore);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerAColor }]}>+</ThemedText>
+                      </TouchableOpacity>
+                    </View>
+                    
+                    {/* Séparateur */}
+                    <ThemedText style={[styles.setScoreSeparator, { color: colors.text + '40' }]}>
+                      —
+                    </ThemedText>
+                    
+                    {/* Joueur B - Contrôles */}
+                    <View style={styles.setScoreControlsCompact}>
+                      <TouchableOpacity
+                        style={[styles.setScoreButtonCompact, { backgroundColor: playerBColor + '20', borderColor: playerBColor }]}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if (scoreB > 0) {
+                            setScoreB(scoreB - 1);
+                            const liveScore = generateLiveScore(completedGames, scoreA, scoreB - 1, gamesA, gamesB);
+                            updateLiveScore(liveScore);
+                          }
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerBColor }]}>−</ThemedText>
+                      </TouchableOpacity>
+                      <ThemedText style={[styles.setScoreValueCompact, { color: playerBColor }]}>
+                        {scoreB}
+                      </ThemedText>
+                      <TouchableOpacity
+                        style={[styles.setScoreButtonCompact, { backgroundColor: playerBColor + '20', borderColor: playerBColor }]}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setScoreB(scoreB + 1);
+                          const liveScore = generateLiveScore(completedGames, scoreA, scoreB + 1, gamesA, gamesB);
+                          updateLiveScore(liveScore);
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <ThemedText style={[styles.setScoreButtonTextCompact, { color: playerBColor }]}>+</ThemedText>
+                      </TouchableOpacity>
+                    </View>
+                    
+                    {/* Bouton supprimer */}
+                    <TouchableOpacity
+                      style={[styles.setDeleteButton, { 
+                        backgroundColor: playerBColor + '10',
+                      }]}
+                      onPress={async () => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        
+                        // Réinitialiser le set en cours
+                        setScoreA(0);
+                        setScoreB(0);
+                        setScoreHistory([]);
+                        setCurrentService(null);
+                        setServicePosition('R');
+                        
+                        // Mettre à jour le live_score
+                        const liveScore = generateLiveScore(completedGames, 0, 0, gamesA, gamesB);
+                        await updateLiveScore(liveScore);
+                        
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <IconSymbol name="trash" size={16} color={playerBColor} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              
+              {completedGames.length === 0 && (gamesA >= 3 || gamesB >= 3 || (scoreA === 0 && scoreB === 0 && completedGames.length === 0)) && (
+                <ThemedText style={[styles.noSetsText, { color: colors.text + '60' }]}>
+                  Aucun set à gérer
+                </ThemedText>
+              )}
+            </ScrollView>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel, { borderColor: colors.text + '30' }]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowAllSetsModal(false);
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.modalButtonText, { color: colors.text + '70' }]}>
+                  Fermer
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de sélection de couleur */}
+      <Modal
+        visible={showColorPicker !== null}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowColorPicker(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, styles.colorPickerModal, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+            <ThemedText style={[styles.modalTitle, { color: colors.text }]}>
+              Choisir la couleur
+            </ThemedText>
+            
+            <View style={styles.colorPalette}>
+              {colorPalette.map((color) => {
+                const isSelected = showColorPicker === 'A' ? color === playerAColor : color === playerBColor;
+                return (
+                  <TouchableOpacity
+                    key={color}
+                    style={[
+                      styles.colorOption,
+                      {
+                        backgroundColor: color + '20',
+                        borderColor: color,
+                        borderWidth: isSelected ? 3 : 1.5,
+                      },
+                    ]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                      if (showColorPicker === 'A') {
+                        setPlayerAColor(color);
+                      } else {
+                        setPlayerBColor(color);
+                      }
+                      setShowColorPicker(null);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={[styles.colorCircle, { backgroundColor: color }]} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel, { borderColor: colors.text + '30' }]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowColorPicker(null);
+                }}
+                activeOpacity={0.7}
+              >
+                <ThemedText style={[styles.modalButtonText, { color: colors.text + '70' }]}>
+                  Annuler
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
 
       {/* Modal de récapitulatif du match */}
       <Modal
@@ -885,7 +1453,35 @@ export default function RefereeScreen() {
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalButtonCancel, { borderColor: colors.text + '30' }]}
-                onPress={() => setShowMatchSummary(false)}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  
+                  // Restaurer l'état avant la fin du match
+                  if (stateBeforeMatchEnd) {
+                    setScoreA(stateBeforeMatchEnd.scoreA);
+                    setScoreB(stateBeforeMatchEnd.scoreB);
+                    setGamesA(stateBeforeMatchEnd.gamesA);
+                    setGamesB(stateBeforeMatchEnd.gamesB);
+                    setScoreHistory(stateBeforeMatchEnd.scoreHistory);
+                    setCompletedGames(stateBeforeMatchEnd.completedGames);
+                    setCurrentService(stateBeforeMatchEnd.currentService);
+                    setServicePosition(stateBeforeMatchEnd.servicePosition);
+                    
+                    // Restaurer le live_score
+                    const liveScore = generateLiveScore(
+                      stateBeforeMatchEnd.completedGames,
+                      stateBeforeMatchEnd.scoreA,
+                      stateBeforeMatchEnd.scoreB,
+                      stateBeforeMatchEnd.gamesA,
+                      stateBeforeMatchEnd.gamesB
+                    );
+                    updateMatchScores(stateBeforeMatchEnd.gamesA, stateBeforeMatchEnd.gamesB, liveScore);
+                    
+                    setStateBeforeMatchEnd(null);
+                  }
+                  
+                  setShowMatchSummary(false);
+                }}
                 activeOpacity={0.7}
               >
                 <ThemedText style={[styles.modalButtonText, { color: colors.text + '70' }]}>
@@ -940,39 +1536,67 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
-    gap: 12,
+    position: 'relative',
   },
   playerHeader: {
     flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
+  playerHeaderRight: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'flex-end',
+  },
+  manageSetsButtonContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'box-none',
+  },
+  playerInfo: {
+    flex: 1,
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  playerInfoRight: {
+    flex: 1,
+    alignItems: 'flex-end',
+    gap: 4,
+  },
   playerName: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-    textAlign: 'center',
+    textAlign: 'left',
+  },
+  playerNameRight: {
+    textAlign: 'right',
   },
   gamesContainer: {
     flexDirection: 'row',
-    gap: 4,
+    gap: 3,
     alignItems: 'center',
-    justifyContent: 'center',
   },
   gameBadge: {
     width: 20,
     height: 20,
     borderRadius: 10,
-    borderWidth: 1,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
   },
   gameBadgeText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
-    lineHeight: 16,
+    lineHeight: 14,
     textAlign: 'center',
     includeFontPadding: false,
   },
@@ -1158,6 +1782,9 @@ const styles = StyleSheet.create({
   modalButtonCancel: {
     backgroundColor: 'transparent',
   },
+  modalButtonDelete: {
+    borderWidth: 1.5,
+  },
   modalButtonValidate: {
     borderWidth: 0,
   },
@@ -1169,5 +1796,227 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#fff',
+  },
+  editGameContainer: {
+    gap: 16,
+    marginVertical: 8,
+  },
+  editGameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  editGameLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    flex: 1,
+  },
+  editGameScoreControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  editGameButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editGameButtonText: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  editGameScore: {
+    fontSize: 24,
+    fontWeight: '700',
+    minWidth: 40,
+    textAlign: 'center',
+  },
+  editGameVS: {
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  manageSetsButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manageSetsButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  allSetsList: {
+    maxHeight: 500,
+    marginVertical: 8,
+  },
+  noSetsText: {
+    fontSize: 14,
+    textAlign: 'center',
+    paddingVertical: 20,
+  },
+  setsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 12,
+    borderBottomWidth: 1,
+  },
+  setHeaderPlayer: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  setHeaderPlayerName: {
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  setItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 6,
+  },
+  setItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  setItemTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  setItemLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    minWidth: 60,
+  },
+  setItemScore: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  setScoreRowCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  setPlayerSection: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 8,
+  },
+  setPlayerLabelCompact: {
+    fontSize: 11,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  setScoreControlsCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    justifyContent: 'center',
+  },
+  setScoreButtonCompact: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setScoreButtonTextCompact: {
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  setScoreValueCompact: {
+    fontSize: 18,
+    fontWeight: '700',
+    minWidth: 28,
+    textAlign: 'center',
+  },
+  setScoreSeparator: {
+    fontSize: 16,
+    fontWeight: '300',
+    marginHorizontal: 2,
+  },
+  setScoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    gap: 8,
+  },
+  setPlayerLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+    minWidth: 60,
+  },
+  setScoreControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  setScoreButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setScoreButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  setScoreValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    minWidth: 24,
+    textAlign: 'center',
+  },
+  setDeleteButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setDeleteButtonText: {
+    fontSize: 14,
+  },
+  colorPickerModal: {
+    maxWidth: 350,
+  },
+  colorPalette: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  colorOption: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  colorCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
   },
 });
