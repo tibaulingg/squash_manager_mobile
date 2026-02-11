@@ -3,7 +3,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import 'react-native-reanimated';
 
 import { NotificationSetup } from '@/components/notification-setup';
@@ -40,9 +40,7 @@ export default function RootLayout() {
 
   if (!appIsReady) {
     return (
-      <View style={styles.splashContainer}>
-        <Text style={styles.splashText}>squash 22</Text>
-      </View>
+      <View style={styles.splashContainer}/>
     );
   }
 

@@ -97,6 +97,8 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
   const [followersPlayers, setFollowersPlayers] = useState<PlayerDTO[]>([]);
   const [showFollowingModal, setShowFollowingModal] = useState(false);
   const [followingModalType, setFollowingModalType] = useState<'following' | 'followers'>('following');
+  const [showRgpdModal, setShowRgpdModal] = useState(false);
+  const [isRgpdRequesting, setIsRgpdRequesting] = useState(false);
   const [stats, setStats] = useState({ wins: 0, losses: 0, winRate: 0 });
   const [advancedStats, setAdvancedStats] = useState({
     currentStreak: { type: 'win' as 'win' | 'loss', count: 0 },
@@ -745,6 +747,49 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
         },
       },
     ]);
+  };
+
+  const handleRgpdRequest = async () => {
+    if (!currentPlayer || !user) return;
+    
+    setIsRgpdRequesting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    try {
+      const { API_BASE_URL } = require('@/constants/config');
+      const response = await fetch(`${API_BASE_URL}/Players/${currentPlayer.id}/rgpd-request?currentPlayerId=${currentPlayer.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        throw new Error('Erreur lors de la demande RGPD');
+      }
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowRgpdModal(false);
+      
+      Alert.alert(
+        'Demande RGPD envoyée',
+        'Votre demande d\'anonymisation/suppression de compte a été enregistrée.',
+        [{ text: 'OK' }]
+      );
+
+      await logout();
+      router.replace('/(tabs)');
+
+
+    } catch (error) {
+      console.error('Erreur demande RGPD:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Erreur',
+        'Une erreur est survenue lors de l\'envoi de votre demande. Veuillez réessayer plus tard.',
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setIsRgpdRequesting(false);
+    }
   };
 
   const handleUpdateNextBoxStatus = async (status: string | null) => {
@@ -2452,21 +2497,43 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
 
         {/* Se déconnecter - seulement pour le joueur connecté */}
         {currentPlayer && user && currentPlayer.id === user.id && (
-          <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
-            <TouchableOpacity
-              style={[styles.logoutButton, { backgroundColor: '#ef4444' + '15' }]}
-              onPress={handleLogout}
-              activeOpacity={0.7}
-            >
-              <View style={styles.logoutButtonLeft}>
-                <IconSymbol name="arrow.right.square.fill" size={20} color="#ef4444" />
-                <ThemedText style={[styles.logoutButtonText, { color: '#ef4444' }]}>
-                  Se déconnecter
-                </ThemedText>
-              </View>
-              <IconSymbol name="chevron.right" size={16} color="#ef4444" />
-            </TouchableOpacity>
-          </View>
+          <>
+            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+              <TouchableOpacity
+                style={[styles.logoutButton, { backgroundColor: '#ef4444' + '15' }]}
+                onPress={handleLogout}
+                activeOpacity={0.7}
+              >
+                <View style={styles.logoutButtonLeft}>
+                  <IconSymbol name="arrow.right.square.fill" size={20} color="#ef4444" />
+                  <ThemedText style={[styles.logoutButtonText, { color: '#ef4444' }]}>
+                    Se déconnecter
+                  </ThemedText>
+                </View>
+                <IconSymbol name="chevron.right" size={16} color="#ef4444" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Demande RGPD */}
+            <View style={[styles.card, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}>
+              <TouchableOpacity
+                style={[styles.logoutButton, { backgroundColor: colors.text + '08' }]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowRgpdModal(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.logoutButtonLeft}>
+                  <IconSymbol name="lock.fill" size={20} color={colors.text + '70'} />
+                  <ThemedText style={[styles.logoutButtonText, { color: colors.text + '70' }]}>
+                    Demande RGPD
+                  </ThemedText>
+                </View>
+                <IconSymbol name="chevron.right" size={16} color={colors.text + '40'} />
+              </TouchableOpacity>
+            </View>
+          </>
         )}
 
         <View style={{ height: 40 }} />
@@ -2912,6 +2979,72 @@ export default function ProfileScreen({ isModal = false, playerId, onClose, onSt
               )}
             </TouchableOpacity>
           </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Modal de demande RGPD */}
+      <Modal
+        visible={showRgpdModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowRgpdModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowRgpdModal(false)}
+        >
+          <View
+            style={[styles.rgpdModalContent, { backgroundColor: colors.background, borderColor: colors.text + '20' }]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.rgpdModalHeader}>
+              <View style={[styles.rgpdIconContainer, { backgroundColor: colors.text + '10' }]}>
+                <IconSymbol name="lock.fill" size={24} color={colors.text} />
+              </View>
+              <ThemedText style={[styles.rgpdModalTitle, { color: colors.text }]}>
+                Demande RGPD
+              </ThemedText>
+              <ThemedText style={[styles.rgpdModalDescription, { color: colors.text + '70' }]}>
+                Vous pouvez demander l'anonymisation ou la suppression de votre compte conformément au RGPD. Cette action est irréversible et entraînera la suppression de toutes vos données personnelles.
+              </ThemedText>
+            </View>
+
+            <View style={styles.rgpdModalActions}>
+              <TouchableOpacity
+                style={[styles.rgpdModalButton, styles.rgpdModalButtonCancel, { borderColor: colors.text + '30' }]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowRgpdModal(false);
+                }}
+                activeOpacity={0.7}
+                disabled={isRgpdRequesting}
+              >
+                <ThemedText style={[styles.rgpdModalButtonText, { color: colors.text + '70' }]}>
+                  Annuler
+                </ThemedText>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.rgpdModalButton,
+                  styles.rgpdModalButtonConfirm,
+                  { backgroundColor: '#ef4444' },
+                  isRgpdRequesting && styles.rgpdModalButtonDisabled,
+                ]}
+                onPress={handleRgpdRequest}
+                activeOpacity={0.7}
+                disabled={isRgpdRequesting}
+              >
+                {isRgpdRequesting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <ThemedText style={styles.rgpdModalButtonTextConfirm}>
+                    Confirmer
+                  </ThemedText>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
         </TouchableOpacity>
       </Modal>
     </>
@@ -4129,6 +4262,73 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   reportSubmitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Modal RGPD
+  rgpdModalContent: {
+    width: '90%',
+    maxWidth: 400,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  rgpdModalHeader: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  rgpdIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  rgpdModalTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  rgpdModalDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  rgpdModalActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  rgpdModalButton: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  rgpdModalButtonCancel: {
+    borderWidth: 1.5,
+  },
+  rgpdModalButtonConfirm: {
+    backgroundColor: '#ef4444',
+  },
+  rgpdModalButtonDisabled: {
+    opacity: 0.6,
+  },
+  rgpdModalButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  rgpdModalButtonTextConfirm: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',

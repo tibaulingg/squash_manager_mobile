@@ -603,7 +603,6 @@ export default function RefereeScreen() {
           score_a: finalScoreA,
           score_b: finalScoreB,
           played_at: new Date().toISOString(),
-          running: false,
         }),
       });
       
