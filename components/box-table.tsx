@@ -92,6 +92,10 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
   const colors = Colors[colorScheme ?? 'light'];
   const { width } = useWindowDimensions();
   
+  // Couleurs de bordure adaptées au thème
+  const borderColor = colorScheme === 'dark' ? colors.text + '15' : '#FAFAFA';
+  const totalBorderColor = colorScheme === 'dark' ? colors.text + '30' : '#F0F0F0';
+  
   // Trier les joueurs par score total décroissant
   const playersWithScores = players.map((player, index) => ({
     player,
@@ -219,8 +223,8 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
         text: formatDate(match.scheduledDate),
         isWin: null,
         isScheduled: true,
-        backgroundColor: '#ffffff',
-        textColor: colorScheme === 'dark' ? '#9ca3af' : '#666',
+        backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+        textColor: colorScheme === 'dark' ? colors.text + '80' : '#666',
       };
     }
     
@@ -228,21 +232,22 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
       text: '-', 
       isWin: null, 
       isScheduled: false,
-      backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
-      textColor: colorScheme === 'dark' ? '#9ca3af' : '#666',
+      backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+      textColor: colorScheme === 'dark' ? colors.text + '50' : '#666',
     };
   };
 
   return (
     <View style={styles.tableContainer}>
       {/* En-tête avec noms des joueurs */}
-      <View style={styles.headerRow}>
+      <View style={[styles.headerRow, { borderBottomColor: borderColor }]}>
         <View style={[
           styles.cell, 
           styles.headerCell, 
           { 
             width: firstColumnWidth,
-            backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
+            backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+            borderRightColor: borderColor,
           }
         ]}>
           <ThemedText style={styles.headerText}></ThemedText>
@@ -257,7 +262,8 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                 styles.headerCell, 
                 { 
                   width: playerColumnWidth,
-                  backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
+                  backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+                  borderRightColor: borderColor,
                 }
               ]}
               onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
@@ -282,7 +288,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                   </View>
                 )}
                 <View style={styles.playerNameTextContainer}>
-                  <ThemedText style={[styles.lastNameText, { color: '#0a1629' }]} numberOfLines={1}>
+                  <ThemedText style={[styles.lastNameText, { color: colors.text }]} numberOfLines={1}>
                     {player.lastName}
                   </ThemedText>
                   <ThemedText style={[styles.firstNameText, { color: colors.text + '70' }]} numberOfLines={1}>
@@ -299,7 +305,9 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
           styles.totalColumn, 
           { 
             width: totalColumnWidth,
-            backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
+            backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+            borderLeftColor: totalBorderColor,
+            borderRightColor: borderColor,
           }
         ]}>
           <ThemedText style={styles.headerText}>Total</ThemedText>
@@ -309,17 +317,17 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
       {/* Lignes de données */}
       {sortedPlayers.map((player, rowIndex) => {
         // Déterminer la couleur de bordure selon le statut de réinscription
-        const borderColor = player.nextBoxStatus === 'continue' ? '#10b981' : // Vert pour réinscrit
+        const reinscriptionBorderColor = player.nextBoxStatus === 'continue' ? '#10b981' : // Vert pour réinscrit
                            player.nextBoxStatus === 'stop' ? '#ef4444' : // Rouge pour arrêt
                            undefined; // Pas de bordure si pas de statut
         
         return (
         <View 
           key={player.id} 
-          style={styles.dataRow}
+          style={[styles.dataRow, { borderBottomColor: borderColor }]}
         >
-          {borderColor && (
-            <View style={[styles.reinscriptionBorder, { backgroundColor: borderColor }]} />
+          {reinscriptionBorderColor && (
+            <View style={[styles.reinscriptionBorder, { backgroundColor: reinscriptionBorderColor }]} />
           )}
           {/* Nom du joueur avec avatar */}
           {(() => {
@@ -331,7 +339,8 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                   styles.playerNameCell, 
                   { 
                     width: firstColumnWidth,
-                    backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
+                    backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+                    borderRightColor: borderColor,
                   }
                 ]}
                 onPress={onPlayerPress ? () => onPlayerPress(player.id) : undefined}
@@ -356,7 +365,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                     </View>
                   )}
                   <View style={styles.playerNameTextContainerVertical}>
-                    <ThemedText style={[styles.lastNameTextVertical, { color: '#0a1629' }]} numberOfLines={1}>
+                    <ThemedText style={[styles.lastNameTextVertical, { color: colors.text }]} numberOfLines={1}>
                       {player.lastName}
                     </ThemedText>
                     <ThemedText style={[styles.firstNameTextVertical, { color: colors.text + '70' }]} numberOfLines={1}>
@@ -380,6 +389,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                     { 
                       width: playerColumnWidth,
                       backgroundColor: '#000000',
+                      borderRightColor: borderColor,
                     }
                   ]}
                 >
@@ -399,6 +409,7 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
                   { 
                     width: playerColumnWidth,
                     backgroundColor: result.backgroundColor,
+                    borderRightColor: borderColor,
                   }
                 ]}
               >
@@ -422,7 +433,9 @@ export function BoxTable({ players, matches, onPlayerPress }: BoxTableProps) {
             styles.totalCell, 
             { 
               width: totalColumnWidth,
-              backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
+              backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+              borderLeftColor: totalBorderColor,
+              borderRightColor: borderColor,
             }
           ]}>
             <ThemedText style={styles.totalText}>
@@ -443,14 +456,12 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+    borderBottomWidth: 0.5,
   },
   dataRow: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
     position: 'relative',
+    borderBottomWidth: 0.5,
   },
   reinscriptionBorder: {
     position: 'absolute',
@@ -464,24 +475,19 @@ const styles = StyleSheet.create({
     padding: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    borderRightWidth: 1,
-    borderRightColor: '#E5E7EB',
+    borderRightWidth: 0.5,
   },
   headerCell: {
     minHeight: 45,
     paddingVertical: 3,
-    borderRightWidth: 1,
-    borderRightColor: '#E5E7EB',
+    borderRightWidth: 0.5,
   },
   totalColumn: {
     borderLeftWidth: 2,
-    borderLeftColor: '#D1D5DB',
-    borderRightWidth: 2,
-    borderRightColor: '#D1D5DB',
+    borderRightWidth: 0.5,
   },
   playerNameCell: {
-    borderRightWidth: 1,
-    borderRightColor: '#E5E7EB',
+    borderRightWidth: 0.5,
   },
   playerNameContainer: {
     alignItems: 'center',
@@ -586,14 +592,11 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '400',
     opacity: 0.7,
-    color: '#666',
     lineHeight: 10,
   },
   totalCell: {
     borderLeftWidth: 2,
-    borderLeftColor: '#D1D5DB',
-    borderRightWidth: 2,
-    borderRightColor: '#D1D5DB',
+    borderRightWidth: 0.5,
   },
   totalText: {
     fontSize: 11,

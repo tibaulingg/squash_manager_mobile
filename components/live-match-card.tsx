@@ -32,17 +32,34 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
     if (!match.running_since) return;
 
     const updateTime = () => {
+      // Parser la date - si c'est une string ISO, elle est déjà en UTC
       const startTime = new Date(match.running_since!);
       const now = new Date();
-      const diff = Math.floor((now.getTime() - startTime.getTime()) / 1000); // Différence en secondes
       
-      const minutes = Math.floor(diff / 60);
+      // Calculer la différence en millisecondes (les deux dates sont déjà dans le même timezone)
+      const diff = Math.floor((now.getTime() - startTime.getTime()) / 1000);
+      
+      // Si la différence est négative, le match n'a pas encore commencé
+      if (diff < 0) {
+        setTimeElapsed('00:00');
+        return;
+      }
+      
+      const hours = Math.floor(diff / 3600);
+      const minutes = Math.floor((diff % 3600) / 60);
       const seconds = diff % 60;
       
-      // Formater en MM:SS
-      const formattedMinutes = String(minutes).padStart(2, '0');
-      const formattedSeconds = String(seconds).padStart(2, '0');
-      setTimeElapsed(`${formattedMinutes}:${formattedSeconds}`);
+      // Formater en HH:MM:SS ou MM:SS selon la durée
+      if (hours > 0) {
+        const formattedHours = String(hours).padStart(2, '0');
+        const formattedMinutes = String(minutes).padStart(2, '0');
+        const formattedSeconds = String(seconds).padStart(2, '0');
+        setTimeElapsed(`${formattedHours}:${formattedMinutes}:${formattedSeconds}`);
+      } else {
+        const formattedMinutes = String(minutes).padStart(2, '0');
+        const formattedSeconds = String(seconds).padStart(2, '0');
+        setTimeElapsed(`${formattedMinutes}:${formattedSeconds}`);
+      }
     };
 
     updateTime();
@@ -90,67 +107,73 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
 
   return (
     <View style={[styles.card, { 
-      backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
-      borderColor: colors.text + '12',
+      backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+      borderColor: colorScheme === 'dark' ? colors.text + '15' : '#E5E7EB',
       shadowColor: '#000',
     }]}>
-      {/* Header compact */}
+      {/* Header sobre et épuré */}
       <View style={[styles.header, { 
-        backgroundColor: colorScheme === 'dark' ? '#252525' : '#f8f9fa',
-        borderBottomColor: colors.text + '08',
+        backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
+        borderBottomColor: colorScheme === 'dark' ? colors.text + '08' : '#F0F0F0',
       }]}>
-        <View style={styles.headerLeft}>
-          <View style={[styles.liveIndicator, { backgroundColor: '#ef4444' + '20' }]}>
-            <View style={[styles.liveDot, { backgroundColor: '#ef4444' }]} />
-            <ThemedText style={[styles.liveText, { color: '#ef4444' }]}>LIVE</ThemedText>
+        <View style={styles.headerContent}>
+          {/* Bouton arbitrer et temps à gauche */}
+          <View style={styles.leftSection}>
+            {onRefereePress && isReferee && (
+              <TouchableOpacity
+                style={[styles.refereeButton, { 
+                  backgroundColor: colorScheme === 'dark' ? PRIMARY_COLOR + '15' : PRIMARY_COLOR + '10',
+                }]}
+                onPress={() => onRefereePress(match.id)}
+                activeOpacity={0.7}
+              >
+                <IconSymbol name="checkmark.circle.fill" size={12} color={PRIMARY_COLOR} />
+                <ThemedText style={[styles.refereeText, { color: PRIMARY_COLOR }]}>
+                  Arbitrer
+                </ThemedText>
+              </TouchableOpacity>
+            )}
             {timeElapsed && (
-              <ThemedText style={[styles.timeElapsed, { color: colors.text + '60' }]}>
-                • {timeElapsed}
-              </ThemedText>
+              <View style={[styles.timeChip, {
+                backgroundColor: colorScheme === 'dark' ? colors.text + '08' : '#F5F5F5',
+              }]}>
+                <View style={[styles.liveDot, { backgroundColor: '#ef4444' }]} />
+                <ThemedText style={[styles.timeElapsed, { color: colors.text + '70' }]}>
+                  {timeElapsed}
+                </ThemedText>
+              </View>
             )}
           </View>
-          {box && (
-            <>
-              <View style={[styles.boxChip, { 
-                backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#ffffff',
-                borderColor: colors.text + '15',
+
+          {/* Infos alignées à droite */}
+          <View style={styles.rightSection}>
+            {box && (
+              <View style={[styles.infoChip, {
+                backgroundColor: colorScheme === 'dark' ? colors.text + '08' : '#F5F5F5',
               }]}>
-                <IconSymbol name="square.grid.2x2.fill" size={9} color={colors.text + '70'} />
-                <ThemedText style={[styles.boxText, { color: colors.text }]}>
+                <IconSymbol name="square.grid.2x2.fill" size={10} color={PRIMARY_COLOR} />
+                <ThemedText style={[styles.infoChipText, { color: colors.text }]}>
                   {box.name}
                 </ThemedText>
               </View>
-              {match.terrain_number && (
-                <ThemedText style={[styles.terrainInline, { color: colors.text + '70' }]}>
-                  T{match.terrain_number}
+            )}
+            {match.terrain_number && (
+              <View style={[styles.infoChip, {
+                backgroundColor: colorScheme === 'dark' ? colors.text + '08' : '#F5F5F5',
+              }]}>
+                <IconSymbol name="sportscourt.fill" size={10} color={colors.text + '60'} />
+                <ThemedText style={[styles.infoChipText, { color: colors.text + '70' }]}>
+                  {match.terrain_number}
                 </ThemedText>
-              )}
-            </>
-          )}
-        </View>
-        
-        <View style={styles.headerRight}>
-          {onRefereePress && isReferee && (
-            <TouchableOpacity
-              style={[styles.refereeButton, { 
-                backgroundColor: PRIMARY_COLOR + '15',
-                borderColor: PRIMARY_COLOR + '30',
-              }]}
-              onPress={() => onRefereePress(match.id)}
-              activeOpacity={0.7}
-            >
-              <IconSymbol name="checkmark.circle.fill" size={12} color={PRIMARY_COLOR} />
-              <ThemedText style={[styles.refereeText, { color: PRIMARY_COLOR }]}>
-                Arbitrer
-              </ThemedText>
-            </TouchableOpacity>
-          )}
+              </View>
+            )}
+          </View>
         </View>
       </View>
 
       {/* Contenu compact avec scores */}
       <View style={[styles.content, { 
-        backgroundColor: colorScheme === 'dark' ? '#1a1a1a' : '#ffffff',
+        backgroundColor: colorScheme === 'dark' ? colors.background : '#ffffff',
       }]}>
         {/* Joueur A avec ses scores */}
         <View style={styles.scoreRow}>
@@ -160,22 +183,28 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
             activeOpacity={0.6}
             disabled={!onPlayerPress}
           >
-            <PlayerAvatar
-              firstName={playerA.first_name || 'Joueur'}
-              lastName={playerA.last_name || ''}
-              pictureUrl={playerA.picture}
-              size={20}
-            />
-            <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
-              {playerAName}
-            </ThemedText>
-            {isPlayerAServing && (
-              <View style={styles.squashBall}>
-                <View style={styles.squashBallBase} />
-                <View style={styles.squashBallDot1} />
-                <View style={styles.squashBallDot2} />
-              </View>
-            )}
+            <View style={styles.avatarWrapper}>
+              <PlayerAvatar
+                firstName={playerA.first_name || 'Joueur'}
+                lastName={playerA.last_name || ''}
+                pictureUrl={playerA.picture}
+                size={28}
+              />
+              {isPlayerAServing && (
+                <View style={styles.servingBadge}>
+                  <View style={styles.squashBall}>
+                    <View style={styles.squashBallBase} />
+                    <View style={styles.squashBallDot1} />
+                    <View style={styles.squashBallDot2} />
+                  </View>
+                </View>
+              )}
+            </View>
+            <View style={styles.playerInfo}>
+              <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
+                {playerAName}
+              </ThemedText>
+            </View>
           </TouchableOpacity>
           <View style={styles.scoresContainer}>
             {gameScores.length > 0 ? (
@@ -195,7 +224,7 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
                           : { backgroundColor: '#ef4444' }
                       ]}
                     >
-                      <ThemedText style={styles.scoreBadgeText}>
+                      <ThemedText style={[styles.scoreBadgeText, { color: '#FFFFFF' }]}>
                         {game.scoreA}
                       </ThemedText>
                     </View>
@@ -203,19 +232,20 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
                 }
                 
                 if (isCurrentSet) {
-                  // Set en cours - afficher avec un badge distinctif
+                  // Set en cours - afficher avec un badge rond en gris
                   return (
                     <View
                       key={index}
                       style={[
-                        styles.currentSetBadge,
+                        styles.scoreBadge,
                         { 
-                          backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f0f0f0',
-                          borderColor: colors.text + '30',
+                          backgroundColor: colorScheme === 'dark' ? colors.text + '20' : colors.text + '10',
                         }
                       ]}
                     >
-                      <ThemedText style={[styles.currentSetScore, { color: colors.text }]}>
+                      <ThemedText style={[styles.scoreBadgeText, { 
+                        color: colorScheme === 'dark' ? colors.text + '80' : colors.text + '60' 
+                      }]}>
                         {game.scoreA}
                       </ThemedText>
                     </View>
@@ -223,27 +253,33 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
                 }
                 
                 return (
-                  <ThemedText 
+                  <View
                     key={index}
-                    style={[
-                      styles.gameScoreText, 
-                      { color: colors.text + '70' },
-                    ]}
+                    style={styles.gameScoreText}
                   >
-                    {String(game.scoreA).padStart(2, ' ')}
-                  </ThemedText>
+                    <ThemedText style={{ color: colors.text + '70', fontSize: 13, fontWeight: '500' }}>
+                      {String(game.scoreA).padStart(2, ' ')}
+                    </ThemedText>
+                  </View>
                 );
               })
             ) : (
-              <ThemedText style={[styles.gameScoreText, { color: colors.text }]}>
-                {String(scoreA).padStart(2, ' ')}
-              </ThemedText>
+              // Si pas de score (0-0), ne rien afficher ou afficher un chip vide
+              scoreA === 0 && scoreB === 0 ? null : (
+                <View style={styles.gameScoreText}>
+                  <ThemedText style={{ color: colors.text, fontSize: 13, fontWeight: '500' }}>
+                    {String(scoreA).padStart(2, ' ')}
+                  </ThemedText>
+                </View>
+              )
             )}
           </View>
         </View>
 
         {/* Séparateur */}
-        <View style={[styles.separator, { backgroundColor: colors.text + '10' }]} />
+        <View style={[styles.separator, { 
+          backgroundColor: colorScheme === 'dark' ? colors.text + '08' : '#F3F4F6',
+        }]} />
 
         {/* Joueur B avec ses scores */}
         <View style={styles.scoreRow}>
@@ -253,22 +289,28 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
             activeOpacity={0.6}
             disabled={!onPlayerPress}
           >
-            <PlayerAvatar
-              firstName={playerB.first_name || 'Joueur'}
-              lastName={playerB.last_name || ''}
-              pictureUrl={playerB.picture}
-              size={20}
-            />
-            <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
-              {playerBName}
-            </ThemedText>
-            {isPlayerBServing && (
-              <View style={styles.squashBall}>
-                <View style={styles.squashBallBase} />
-                <View style={styles.squashBallDot1} />
-                <View style={styles.squashBallDot2} />
-              </View>
-            )}
+            <View style={styles.avatarWrapper}>
+              <PlayerAvatar
+                firstName={playerB.first_name || 'Joueur'}
+                lastName={playerB.last_name || ''}
+                pictureUrl={playerB.picture}
+                size={28}
+              />
+              {isPlayerBServing && (
+                <View style={styles.servingBadge}>
+                  <View style={styles.squashBall}>
+                    <View style={styles.squashBallBase} />
+                    <View style={styles.squashBallDot1} />
+                    <View style={styles.squashBallDot2} />
+                  </View>
+                </View>
+              )}
+            </View>
+            <View style={styles.playerInfo}>
+              <ThemedText style={[styles.playerName, { color: colors.text }]} numberOfLines={1}>
+                {playerBName}
+              </ThemedText>
+            </View>
           </TouchableOpacity>
           <View style={styles.scoresContainer}>
             {gameScores.length > 0 ? (
@@ -288,7 +330,7 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
                           : { backgroundColor: '#ef4444' }
                       ]}
                     >
-                      <ThemedText style={styles.scoreBadgeText}>
+                      <ThemedText style={[styles.scoreBadgeText, { color: '#FFFFFF' }]}>
                         {game.scoreB}
                       </ThemedText>
                     </View>
@@ -296,19 +338,20 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
                 }
                 
                 if (isCurrentSet) {
-                  // Set en cours - afficher avec un badge distinctif
+                  // Set en cours - afficher avec un badge rond en gris
                   return (
                     <View
                       key={index}
                       style={[
-                        styles.currentSetBadge,
+                        styles.scoreBadge,
                         { 
-                          backgroundColor: colorScheme === 'dark' ? '#2a2a2a' : '#f0f0f0',
-                          borderColor: colors.text + '30',
+                          backgroundColor: colorScheme === 'dark' ? colors.text + '20' : colors.text + '10',
                         }
                       ]}
                     >
-                      <ThemedText style={[styles.currentSetScore, { color: colors.text }]}>
+                      <ThemedText style={[styles.scoreBadgeText, { 
+                        color: colorScheme === 'dark' ? colors.text + '80' : colors.text + '60' 
+                      }]}>
                         {game.scoreB}
                       </ThemedText>
                     </View>
@@ -316,21 +359,25 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
                 }
                 
                 return (
-                  <ThemedText 
+                  <View
                     key={index}
-                    style={[
-                      styles.gameScoreText, 
-                      { color: colors.text + '70' },
-                    ]}
+                    style={styles.gameScoreText}
                   >
-                    {String(game.scoreB).padStart(2, ' ')}
-                  </ThemedText>
+                    <ThemedText style={{ color: colors.text + '70', fontSize: 13, fontWeight: '500' }}>
+                      {String(game.scoreB).padStart(2, ' ')}
+                    </ThemedText>
+                  </View>
                 );
               })
             ) : (
-              <ThemedText style={[styles.gameScoreText, { color: colors.text }]}>
-                {String(scoreB).padStart(2, ' ')}
-              </ThemedText>
+              // Si pas de score (0-0), ne rien afficher ou afficher un chip vide
+              scoreA === 0 && scoreB === 0 ? null : (
+                <View style={styles.gameScoreText}>
+                  <ThemedText style={{ color: colors.text, fontSize: 13, fontWeight: '500' }}>
+                    {String(scoreB).padStart(2, ' ')}
+                  </ThemedText>
+                </View>
+              )
             )}
           </View>
         </View>
@@ -341,148 +388,125 @@ export function LiveMatchCard({ match, playerA, playerB, box, onPlayerPress, onR
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     overflow: 'hidden',
-    marginBottom: 8,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
+    marginBottom: 12,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
   },
   header: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+  },
+  headerContent: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    gap: 6,
   },
-  headerLeft: {
-    flex: 1,
+  leftSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
-  headerRight: {
+  timeChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-  },
-  boxChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 0.5,
-  },
-  boxText: {
-    fontSize: 9,
-    fontWeight: '600',
-    letterSpacing: 0.1,
-  },
-  liveIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
   },
   liveDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-  },
-  liveText: {
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   timeElapsed: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '500',
     letterSpacing: 0.2,
+    fontVariant: ['tabular-nums'],
   },
-  terrainChip: {
+  rightSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 0.5,
+    gap: 8,
   },
-  terrainText: {
-    fontSize: 9,
-    fontWeight: '600',
-    letterSpacing: 0.1,
+  infoChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
   },
-  terrainInline: {
-    fontSize: 9,
-    fontWeight: '600',
+  infoChipText: {
+    fontSize: 11,
+    fontWeight: '500',
     letterSpacing: 0.1,
-    marginLeft: 2,
   },
   content: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 8,
   },
   scoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 20,
+    minHeight: 32,
   },
   playerContainer: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginRight: 8,
+    gap: 10,
+    marginRight: 12,
     minWidth: 100,
   },
+  avatarWrapper: {
+    position: 'relative',
+  },
+  servingBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 12,
+    height: 12,
+    borderRadius: 8,
+    backgroundColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playerInfo: {
+    flex: 1,
+  },
   playerName: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
   scoresContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    minWidth: 80,
+    gap: 4,
+    minWidth: 100,
     justifyContent: 'flex-end',
   },
   gameScoreText: {
-    fontSize: 12,
-    fontWeight: '500',
-    width: 20,
-    textAlign: 'right',
-    fontVariant: ['tabular-nums'],
-  },
-  currentSetBadge: {
-    minWidth: 28,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1,
+    width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
-  },
-  currentSetScore: {
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '500',
     fontVariant: ['tabular-nums'],
-    textAlign: 'center',
-    lineHeight: 14,
-    includeFontPadding: false,
   },
   separator: {
     height: 1,
-    marginVertical: 4,
+    marginVertical: 6,
   },
   scoreBadge: {
     width: 24,
@@ -494,7 +518,7 @@ const styles = StyleSheet.create({
   scoreBadgeText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#FFFFFF',
+    fontVariant: ['tabular-nums'],
   },
   refereeButton: {
     flexDirection: 'row',
@@ -502,45 +526,42 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 4,
-    borderWidth: 1,
-    minHeight: 24,
+    borderRadius: 6,
   },
   refereeText: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
   squashBall: {
-    width: 12,
-    height: 12,
+    width: 10,
+    height: 10,
     position: 'relative',
-    marginLeft: 3,
     alignSelf: 'center',
   },
   squashBallBase: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: '#000000',
     position: 'absolute',
   },
   squashBallDot1: {
     width: 2,
     height: 2,
-    borderRadius: 1.5,
+    borderRadius: 1,
     backgroundColor: '#fbbf24',
     position: 'absolute',
     top: 2,
-    left: 3,
+    left: 2.5,
   },
   squashBallDot2: {
     width: 2,
     height: 2,
-    borderRadius: 1.5,
+    borderRadius: 1,
     backgroundColor: '#fbbf24',
     position: 'absolute',
-    bottom: 5,
-    right: 5,
+    bottom: 3,
+    right: 4,
   },
 });
