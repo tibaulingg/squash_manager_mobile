@@ -65,6 +65,9 @@ export interface MatchDTO {
   live_score: string | null;
   referee_id: string | null; // GUID - ID de l'arbitre du match
   server_id: string | null; // GUID - ID du joueur qui sert actuellement
+  fullscore: string | null; // Historique complet des scores au format "1-1;1-2;1-3|2-3;2-4..."
+  player_a_color: string | null; // Couleur du joueur A
+  player_b_color: string | null; // Couleur du joueur B
 }
 
 // Compétition

@@ -31,6 +31,10 @@ interface AppBarProps {
     icon: string;
     onPress: () => void;
   };
+  leftIcons?: Array<{
+    icon: string;
+    onPress: () => void;
+  }>;
   rightAction?: {
     icon: string;
     label?: string;
@@ -41,9 +45,10 @@ interface AppBarProps {
     label?: string;
     onPress: () => void;
   }>;
+  minimal?: boolean; // Mode minimal : masque logo, titre, notifications, profil, menu
 }
 
-export function AppBar({ title, menuItems, leftIcon, rightAction, rightActions }: AppBarProps) {
+export function AppBar({ title, menuItems, leftIcon, leftIcons, rightAction, rightActions, minimal = false }: AppBarProps) {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const insets = useSafeAreaInsets();
@@ -132,7 +137,17 @@ export function AppBar({ title, menuItems, leftIcon, rightAction, rightActions }
       >
         <View style={styles.content}>
           <View style={styles.titleSection}>
-            {leftIcon && (
+            {leftIcons && leftIcons.map((icon, index) => (
+              <TouchableOpacity
+                key={index}
+                onPress={icon.onPress}
+                activeOpacity={0.7}
+                style={styles.leftIconButton}
+              >
+                <IconSymbol name={icon.icon as ComponentProps<typeof IconSymbol>['name']} size={24} color={colors.text} />
+              </TouchableOpacity>
+            ))}
+            {!leftIcons && leftIcon && (
               <TouchableOpacity
                 onPress={leftIcon.onPress}
                 activeOpacity={0.7}
@@ -141,44 +156,171 @@ export function AppBar({ title, menuItems, leftIcon, rightAction, rightActions }
                 <IconSymbol name={leftIcon.icon as ComponentProps<typeof IconSymbol>['name']} size={24} color={colors.text} />
               </TouchableOpacity>
             )}
-            <View style={styles.logoContainer}>
-              <Image
-                source={require('@/favicon-logo-header.png')}
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
-            </View>
-            <ThemedText style={[styles.title, { color: colors.text }]}>
-              {pageTitle}
-            </ThemedText>
+            {!minimal && (
+              <>
+                <View style={styles.logoContainer}>
+                  <Image
+                    source={require('@/favicon-logo-header.png')}
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                  />
+                </View>
+                <ThemedText style={[styles.title, { color: colors.text }]}>
+                  {pageTitle}
+                </ThemedText>
+              </>
+            )}
           </View>
           
-          <View style={styles.rightSection}>
-            {/* Actions multiples à droite */}
-            {rightActions && rightActions.map((action, index) => (
-              <TouchableOpacity
-                key={index}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  action.onPress();
-                }}
-                activeOpacity={0.6}
-                style={styles.actionButton}
-              >
-                <IconSymbol 
-                  name={action.icon as ComponentProps<typeof IconSymbol>['name']} 
-                  size={22} 
-                  color={colors.text} 
-                />
-                {action.label && (
-                  <ThemedText style={[styles.actionButtonLabel, { color: colors.text }]}>
-                    {action.label}
-                  </ThemedText>
-                )}
-              </TouchableOpacity>
-            ))}
-            {/* Action unique à droite (pour compatibilité) */}
-            {!rightActions && rightAction && (
+          {!minimal && (
+            <View style={styles.rightSection}>
+              {/* Actions multiples à droite */}
+              {rightActions && rightActions.map((action, index) => (
+                <TouchableOpacity
+                  key={index}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    action.onPress();
+                  }}
+                  activeOpacity={0.6}
+                  style={styles.actionButton}
+                >
+                  <IconSymbol 
+                    name={action.icon as ComponentProps<typeof IconSymbol>['name']} 
+                    size={22} 
+                    color={colors.text} 
+                  />
+                  {action.label && (
+                    <ThemedText style={[styles.actionButtonLabel, { color: colors.text }]}>
+                      {action.label}
+                    </ThemedText>
+                  )}
+                </TouchableOpacity>
+              ))}
+              {/* Action unique à droite (pour compatibilité) */}
+              {!rightActions && rightAction && (
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    rightAction.onPress();
+                  }}
+                  activeOpacity={0.6}
+                  style={styles.actionButton}
+                >
+                  <IconSymbol 
+                    name={rightAction.icon as ComponentProps<typeof IconSymbol>['name']} 
+                    size={22} 
+                    color={colors.text} 
+                  />
+                  {rightAction.label && (
+                    <ThemedText style={[styles.actionButtonLabel, { color: colors.text }]}>
+                      {rightAction.label}
+                    </ThemedText>
+                  )}
+                </TouchableOpacity>
+              )}
+              
+              {isAuthenticated && (
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setShowNotifications(true);
+                  }}
+                  activeOpacity={0.7}
+                  style={styles.notificationButton}
+                >
+                  <View style={styles.notificationIconContainer}>
+                    <IconSymbol name="bell.fill" size={24} color={colors.text} />
+                    {unreadCount > 0 && (
+                      <View style={[styles.notificationBadge, { backgroundColor: '#ef4444' }]}>
+                        <ThemedText style={styles.notificationBadgeText}>
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </ThemedText>
+                      </View>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              )}
+              
+              {menuItems && menuItems.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setShowMenu(true);
+                  }}
+                  activeOpacity={0.7}
+                  style={styles.menuButton}
+                >
+                  <IconSymbol name="ellipsis.circle.fill" size={24} color={colors.text} />
+                </TouchableOpacity>
+              )}
+              
+              {isAuthenticated && currentPlayer ? (
+                <TouchableOpacity
+                  onPress={handleAvatarPress}
+                  activeOpacity={0.7}
+                  style={styles.avatarButton}
+                >
+                  <View style={styles.avatarContainer}>
+                    <PlayerAvatar
+                      firstName={currentPlayer.first_name || 'Joueur'}
+                      lastName={currentPlayer.last_name || ''}
+                      pictureUrl={currentPlayer.picture}
+                      size={36}
+                    />
+                    {currentPlayer.current_box?.next_box_status && (
+                      <View
+                        style={[
+                          styles.statusBadge,
+                          {
+                            backgroundColor:
+                              currentPlayer.current_box.next_box_status === 'continue'
+                                ? '#10b981'
+                                : currentPlayer.current_box.next_box_status === 'stop'
+                                ? '#ef4444'
+                                : '#6b7280',
+                            borderColor: colors.background,
+                            shadowColor:
+                              currentPlayer.current_box.next_box_status === 'continue'
+                                ? '#10b981'
+                                : currentPlayer.current_box.next_box_status === 'stop'
+                                ? '#ef4444'
+                                : '#6b7280',
+                          },
+                        ]}
+                      >
+                        <IconSymbol
+                          name={
+                            currentPlayer.current_box.next_box_status === 'continue'
+                              ? 'checkmark'
+                              : currentPlayer.current_box.next_box_status === 'stop'
+                              ? 'xmark'
+                              : 'questionmark'
+                          }
+                          size={7}
+                          color="#fff"
+                        />
+                      </View>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setShowAuthModal(true);
+                  }}
+                  activeOpacity={0.7}
+                  style={styles.loginButton}
+                >
+                  <IconSymbol name="person.circle.fill" size={32} color={colors.text} />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+          
+          {minimal && rightAction && (
+            <View style={styles.rightSection}>
               <TouchableOpacity
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -198,105 +340,8 @@ export function AppBar({ title, menuItems, leftIcon, rightAction, rightActions }
                   </ThemedText>
                 )}
               </TouchableOpacity>
-            )}
-            
-            {isAuthenticated && (
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setShowNotifications(true);
-                }}
-                activeOpacity={0.7}
-                style={styles.notificationButton}
-              >
-                <View style={styles.notificationIconContainer}>
-                  <IconSymbol name="bell.fill" size={24} color={colors.text} />
-                  {unreadCount > 0 && (
-                    <View style={[styles.notificationBadge, { backgroundColor: '#ef4444' }]}>
-                      <ThemedText style={styles.notificationBadgeText}>
-                        {unreadCount > 99 ? '99+' : unreadCount}
-                      </ThemedText>
-                    </View>
-                  )}
-                </View>
-              </TouchableOpacity>
-            )}
-            
-            {menuItems && menuItems.length > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setShowMenu(true);
-                }}
-                activeOpacity={0.7}
-                style={styles.menuButton}
-              >
-                <IconSymbol name="ellipsis.circle.fill" size={24} color={colors.text} />
-              </TouchableOpacity>
-            )}
-            
-            {isAuthenticated && currentPlayer ? (
-              <TouchableOpacity
-                onPress={handleAvatarPress}
-                activeOpacity={0.7}
-                style={styles.avatarButton}
-              >
-                <View style={styles.avatarContainer}>
-                  <PlayerAvatar
-                    firstName={currentPlayer.first_name || 'Joueur'}
-                    lastName={currentPlayer.last_name || ''}
-                    pictureUrl={currentPlayer.picture}
-                    size={36}
-                  />
-                  {currentPlayer.current_box?.next_box_status && (
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        {
-                          backgroundColor:
-                            currentPlayer.current_box.next_box_status === 'continue'
-                              ? '#10b981'
-                              : currentPlayer.current_box.next_box_status === 'stop'
-                              ? '#ef4444'
-                              : '#6b7280',
-                          borderColor: colors.background,
-                          shadowColor:
-                            currentPlayer.current_box.next_box_status === 'continue'
-                              ? '#10b981'
-                              : currentPlayer.current_box.next_box_status === 'stop'
-                              ? '#ef4444'
-                              : '#6b7280',
-                        },
-                      ]}
-                    >
-                      <IconSymbol
-                        name={
-                          currentPlayer.current_box.next_box_status === 'continue'
-                            ? 'checkmark'
-                            : currentPlayer.current_box.next_box_status === 'stop'
-                            ? 'xmark'
-                            : 'questionmark'
-                        }
-                        size={7}
-                        color="#fff"
-                      />
-                    </View>
-                  )}
-                </View>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setShowAuthModal(true);
-                }}
-                activeOpacity={0.7}
-                style={styles.loginButton}
-              >
-                <IconSymbol name="person.circle.fill" size={32} color={colors.text} />
-              </TouchableOpacity>
-            )}
-          </View>
+            </View>
+          )}
         </View>
       </View>
 
